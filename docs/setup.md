@@ -75,7 +75,8 @@ enables OCR, layout, figure descriptions and figure analysis, and returns detail
 physical pages. Descriptions appear in Markdown image titles; supported chart
 analysis appears as chart data, and diagram analysis as Mermaid. The application
 indexes page-bounded windows of that enriched Markdown, not the document summary
-or service-generated cross-page chunks. No embedding field is added to Search.
+or service-generated cross-page chunks. The application separately embeds those
+chunks for Search; it does not reuse CU-generated embeddings.
 
 Model requirements belong to CU, independently of `HRAG_MODEL_DEPLOYMENT`, which
 still selects the MAF query model. Use `ContentUnderstandingClient.get_analyzer()`
@@ -116,16 +117,20 @@ provisioner, ingester, and query service can be separate identities.
 |---|---|
 | Provision Search index/source/base | Search Service Contributor on Search |
 | Ingest Search documents / remove stale chunks | Search Index Data Contributor on Search |
+| Read index definition for ingestion preflight | Search Service Contributor on Search, or a custom role allowing index-definition reads |
 | Query knowledge base | Search Index Data Reader on Search |
 | Read original PDFs | Storage Blob Data Reader on source container |
 | Write extracted pages / create derived container | Storage Blob Data Contributor on derived container (account scope if it must create the container) |
 | Query extracted pages | Storage Blob Data Reader on derived container |
 | Run Content Understanding | Cognitive Services User on Foundry resource |
+| Generate chunk embeddings (application identity) | Cognitive Services OpenAI User on embedding resource |
+| Generate query embeddings (Search system-assigned managed identity) | Cognitive Services OpenAI User on the same embedding resource |
 | Call Foundry deployed model | Azure AI User on Foundry project (and any model inference role required by your resource configuration) |
 
-Search does not call Blob, Content Understanding, or a generative model in this design.
-The Python application does. Therefore there is no Search managed-identity Blob
-indexer role or Search-to-model synthesis role to configure for this baseline.
+Search calls the embedding deployment for query vectorization using its
+system-assigned managed identity; no API key is stored in the index definition.
+It does not call Blob, Content Understanding, or a generative answer model.
+There is no Search managed-identity Blob indexer or answer-synthesis role to configure.
 
 Enable private endpoint connectivity/DNS or permitted public network access for
 each service. RBAC alone does not bypass firewalls. Run the application from a
@@ -139,6 +144,69 @@ hrag ingest --blob "policies/claims.pdf"
 hrag ingest --prefix "policies/"
 hrag ask "Which exclusions affect the emergency coverage?"
 ```
+
+## Hybrid vector retrieval and migration
+
+Configure one embedding endpoint/deployment/model/dimension combination for both
+ingestion and query vectorization:
+
+```dotenv
+HRAG_EMBEDDING_ENDPOINT=https://YOUR-FOUNDRY.openai.azure.com
+HRAG_EMBEDDING_DEPLOYMENT=text-embedding-3-large
+HRAG_EMBEDDING_MODEL=text-embedding-3-large
+HRAG_EMBEDDING_DIMENSIONS=3072
+```
+
+`text-embedding-3-small` is also supported, with at most 1536 dimensions. The
+deployment must actually host the configured model. Do not repoint the same
+deployment name to a different embedding model after indexing.
+
+The ingester uses the official OpenAI Python SDK's `AsyncAzureOpenAI`, Azure API
+`2024-10-21`, and a bearer token provider backed by `DefaultAzureCredential`.
+Embedding requests contain up to 16 chunk texts; vectors are validated for
+response alignment, dimensions and finite/nonzero values before upload.
+Embedding/API errors propagate without falling back to text-only indexing.
+The character-based chunk limit is not a token limit: if a multilingual or large
+chunk exceeds the embedding deployment's input-token limit, lower
+`HRAG_CHUNK_CHARS` (and keep overlap smaller), then retry. Text is never silently
+truncated for embedding.
+
+The Search index adds a non-retrievable `content_vector` field, HNSW/cosine
+configuration, and Azure OpenAI query vectorizer. The knowledge source searches
+both `content` and `content_vector`. IQ's semantic intent remains unchanged:
+the service combines text and vector retrieval and applies semantic ranking.
+Returned source data still contains only the original text/provenance fields.
+`search_document` remains an in-document keyword locator, not a vector query.
+
+For an existing text-only installation:
+
+1. Install updated dependencies: `python -m pip install -e ".[dev]"`.
+2. Configure the embedding settings above and both identities' RBAC.
+   Ensure the Search service can reach the embedding endpoint through applicable
+   firewalls/private networking, not just from your workstation.
+3. Run `hrag provision` to add the vector field/profile/vectorizer and update the
+   IQ knowledge source. This does not generate embeddings for existing records.
+4. Run `hrag ingest` to reprocess/re-embed the corpus. This also reruns CU and
+   incurs its costs; there is no embeddings-only backfill command.
+5. Only regard migration as complete after all intended PDFs succeed.
+   During migration, old chunks without vectors can still participate in text
+   retrieval, so vector coverage is partial.
+
+For uninterrupted use of the old corpus, set new `HRAG_INDEX_NAME`,
+`HRAG_KNOWLEDGE_SOURCE_NAME` and `HRAG_KNOWLEDGE_BASE_NAME` values in a separate
+ingestion environment, provision/re-ingest there, then switch query configuration.
+Old objects and artifacts are never automatically deleted.
+
+Provisioning refuses to change an existing vector field's model/deployment,
+endpoint or dimensions; use new names and re-ingest instead of mixing embedding
+spaces. CLI ingestion checks that index contract before analyzing any PDFs.
+This read requires index-definition permissions in addition to document-write
+permissions. The query service does not need those administrative permissions.
+
+Offline tests verify SDK wire contracts, vector values/alignment, schema
+configuration and regression behavior. Live hybrid retrieval was not run as part
+of this enhancement. After provisioning, verify a paraphrased query retrieves
+the expected page and inspect Search diagnostics/activity for vectorization.
 
 `provision` operates on the names in configuration and updates existing objects.
 Do not point this sample at an unrelated production index. Schema changes that
@@ -199,8 +267,10 @@ hrag ingest --blob "policies/claims.pdf"
 hrag ingest
 ```
 
-No Search schema changes or IQ reprovisioning are required. CU dependencies,
-endpoint, RBAC and model mappings must be ready first. A new extraction revision is published;
+CU Markdown storage itself does not require a Search schema change. For the
+hybrid enhancement, provision the vector-enabled index/source first as described
+above. CU and embedding dependencies, endpoints, RBAC and mappings must be ready.
+A new extraction revision is published;
 old indexed chunks are removed only after the new upload succeeds. Re-ingestion
 incurs Content Understanding and underlying model costs. Retain or clean up old artifact revisions
 according to your retention policy.
@@ -256,7 +326,8 @@ cannot prove model sufficiency judgments, OCR accuracy, or retrieval recall.
 ## Costs and scale
 
 Expect charges for Content Understanding extraction/analysis and its underlying
-model calls, Search/semantic retrieval, Storage operations, and MAF model calls.
+model calls, chunk/query embedding calls, Search/vector/semantic retrieval,
+Storage operations, and MAF model calls. Vector indexing adds memory/storage cost.
 Ingestion page limits are checked
 after extraction, so Content Understanding can already have incurred cost for an
 over-limit file. The byte cap is enforced before download/extraction.

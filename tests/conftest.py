@@ -13,6 +13,7 @@ def settings():
         content_understanding_endpoint="https://example.services.ai.azure.com",
         foundry_project_endpoint="https://example.services.ai.azure.com/api/projects/demo",
         model_deployment="test-model",
+        embedding_endpoint="https://example.openai.azure.com",
         _env_file=None,
     )
 

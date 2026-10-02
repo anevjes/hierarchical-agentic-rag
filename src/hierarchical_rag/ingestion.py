@@ -12,8 +12,10 @@ from azure.core import MatchConditions
 from azure.search.documents.aio import SearchClient
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import ContainerClient
+from openai import AsyncAzureOpenAI
 
 from .config import Settings
+from .embeddings import VECTOR_FIELD, embed_chunks
 from .models import (
     Chunk,
     ContentSpan,
@@ -179,6 +181,7 @@ async def ingest_pdf(
     pages: ContainerClient,
     intelligence: ContentUnderstandingClient,
     search: SearchClient,
+    embeddings: AsyncAzureOpenAI,
 ) -> int:
     started = perf_counter()
     logger.info("Ingesting %s: reading source blob properties", blob_name)
@@ -312,8 +315,22 @@ async def ingest_pdf(
         settings.index_name,
     )
     for start in range(0, len(chunks), 100):
+        batch = chunks[start : start + 100]
+        logger.info(
+            "Embedding %s: chunks %d-%d/%d using %s (%d dimensions)",
+            blob_name,
+            start + 1,
+            start + len(batch),
+            len(chunks),
+            settings.embedding_deployment,
+            settings.embedding_dimensions,
+        )
+        vectors = await embed_chunks(batch, settings, embeddings)
         results = await search.upload_documents(
-            documents=[chunk.model_dump() for chunk in chunks[start : start + 100]],
+            documents=[
+                {**chunk.model_dump(), VECTOR_FIELD: vector}
+                for chunk, vector in zip(batch, vectors, strict=True)
+            ],
         )
         failures = [r for r in results if not r.succeeded]
         if failures:

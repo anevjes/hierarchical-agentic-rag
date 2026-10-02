@@ -9,6 +9,9 @@ Checked against published SDKs and Microsoft documentation during implementation
 - [Create a knowledge base](https://learn.microsoft.com/azure/search/agentic-retrieval-how-to-create-knowledge-base)
 - [Retrieve from a knowledge base](https://learn.microsoft.com/azure/search/agentic-retrieval-how-to-retrieve)
 - [Search SDK](https://learn.microsoft.com/python/api/overview/azure/search-documents-readme)
+- [Index criteria and hybrid query execution for agentic retrieval](https://learn.microsoft.com/azure/search/agentic-retrieval-how-to-create-index)
+- [Azure OpenAI query vectorizer and managed identity](https://learn.microsoft.com/azure/search/vector-search-vectorizer-azure-open-ai)
+- [Official OpenAI Python SDK, including Azure clients](https://github.com/openai/openai-python)
 - [Content Understanding Python SDK](https://learn.microsoft.com/python/api/overview/azure/ai-contentunderstanding-readme)
 - [Content Understanding prebuilt analyzers](https://learn.microsoft.com/azure/ai-services/content-understanding/concepts/prebuilt-analyzers)
 - [Content Understanding Markdown and generated figure descriptions](https://learn.microsoft.com/azure/ai-services/content-understanding/document/markdown)
@@ -23,6 +26,12 @@ Important version distinctions:
 - Search `12.0.0` and API `2026-04-01`: knowledge bases use semantic **intents**
   for minimal extractive retrieval. We do not send preview-only `messages`,
   LLM planning, or answer-synthesis settings to this stable contract.
+- OpenAI Python SDK `3.19.2` / Azure embedding API `2024-10-21` generates chunk
+  vectors with `AsyncAzureOpenAI` and an async Azure Identity bearer token
+  provider. The index vectorizer uses the same deployment/model/dimensions.
+  Both text and vector fields are selected in the IQ knowledge source; vectors
+  are excluded from source-data fields. Hybrid service behavior follows the
+  documented index criteria; this enhancement was validated offline only.
 - MAF `agent-framework-core==1.19.0` and
   `agent-framework-foundry==1.13.1`: `Agent` with
   `agent_framework.foundry.FoundryChatClient`. Older

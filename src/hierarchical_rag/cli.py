@@ -7,17 +7,19 @@ from time import perf_counter
 from agent_framework.foundry import FoundryChatClient
 from azure.ai.contentunderstanding.aio import ContentUnderstandingClient
 from azure.core.exceptions import ResourceExistsError
-from azure.identity.aio import DefaultAzureCredential
+from azure.identity.aio import DefaultAzureCredential, get_bearer_token_provider
 from azure.search.documents.aio import SearchClient
 from azure.search.documents.indexes.aio import SearchIndexClient
 from azure.search.documents.knowledgebases.aio import KnowledgeBaseRetrievalClient
 from azure.storage.blob.aio import BlobServiceClient
+from openai import AsyncAzureOpenAI
 
 from .agent import investigate
 from .config import Settings
+from .embeddings import EMBEDDING_API_VERSION
 from .ingestion import CONTENT_UNDERSTANDING_API_VERSION, ingest_pdf
 from .investigation import Investigation
-from .provision import SEARCH_API_VERSION, provision
+from .provision import SEARCH_API_VERSION, provision, validate_embedding_index
 from .retrieval import AzureEvidenceBackend
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,13 @@ async def run(args: argparse.Namespace) -> None:
             logger.info("Index, knowledge source, and knowledge base are ready")
         elif args.command == "ingest":
             started = perf_counter()
+            index_client = await stack.enter_async_context(
+                SearchIndexClient(
+                    settings.search_endpoint, credential, api_version=SEARCH_API_VERSION
+                )
+            )
+            validate_embedding_index(settings, await index_client.get_index(settings.index_name))
+            logger.info("Validated index embedding configuration before PDF analysis")
             search = await stack.enter_async_context(
                 SearchClient(
                     settings.search_endpoint,
@@ -66,9 +75,18 @@ async def run(args: argparse.Namespace) -> None:
             )
             count = 0
             total_chunks = 0
+            embeddings = await stack.enter_async_context(
+                AsyncAzureOpenAI(
+                    azure_endpoint=settings.embedding_endpoint,
+                    api_version=EMBEDDING_API_VERSION,
+                    azure_ad_token_provider=get_bearer_token_provider(
+                        credential, "https://cognitiveservices.azure.com/.default"
+                    ),
+                )
+            )
             if args.blob:
                 total_chunks = await ingest_pdf(
-                    args.blob, settings, source, pages, intelligence, search
+                    args.blob, settings, source, pages, intelligence, search, embeddings
                 )
                 count = 1
             else:
@@ -83,7 +101,7 @@ async def run(args: argparse.Namespace) -> None:
                         continue
                     logger.info("Processing PDF %d: %s", count + 1, blob.name)
                     total_chunks += await ingest_pdf(
-                        blob.name, settings, source, pages, intelligence, search
+                        blob.name, settings, source, pages, intelligence, search, embeddings
                     )
                     count += 1
             if not count:

@@ -18,8 +18,8 @@ Foundry-hosted agent. No Azure resources are created simply by installing or tes
 3. Persists per-page Markdown, the full-document Markdown, and a versioned JSON
    manifest in a separate private Blob container. Page opens download only the
    requested pages; document searches load the full Markdown once per investigation.
-4. Creates page-bounded chunks in an Azure AI Search index, preserving the PDF URL,
-   physical page number, source ETag, and extraction revision.
+4. Embeds each page-bounded chunk and indexes text plus vectors in Azure AI Search,
+   preserving the PDF URL, physical page number, source ETag, and extraction revision.
 5. Registers that index as an IQ **search-index knowledge source**, then creates an
    IQ **knowledge base** referencing it.
 6. Retrieves extractive chunks and source metadata through the knowledge-base API.
@@ -33,9 +33,16 @@ Foundry-hosted agent. No Azure resources are created simply by installing or tes
 
 The stable Search API `2026-04-01` supports minimal extractive retrieval, without
 knowledge-base LLM query planning or answer synthesis. MAF does the iterative
-planning here. Retrieval uses **keyword search plus semantic ranking**, not vector
-search. Search does not use embeddings; the Content Understanding analyzer has
-its own completion/embedding deployment requirements (see setup).
+planning here. Retrieval uses **hybrid keyword + vector search with semantic
+ranking**. Chunk embeddings and Search's query vectorizer use the same configured
+Azure OpenAI deployment (default `text-embedding-3-large`, 3072 dimensions).
+Vectors are excluded from returned evidence and model context. Content
+Understanding's model mappings remain separate from Search embeddings.
+
+**Existing installation:** install updated dependencies, configure `HRAG_EMBEDDING_*`,
+verify Search's managed-identity access to the embedding resource, run
+`hrag provision`, then re-ingest your corpus. Existing chunks do not acquire
+vectors automatically. See [hybrid migration](docs/setup.md#hybrid-vector-retrieval-and-migration).
 
 ### Why not the automatic Blob knowledge source?
 
@@ -70,7 +77,7 @@ the source ETag is checked when loading its manifest.
 
 Existing inline-page JSON and Document Intelligence Markdown revisions remain
 readable. **Re-run ingestion to add Content Understanding visual analysis** after
-updating dependencies and CU configuration; no Search schema change is needed.
+updating dependencies, CU configuration and the hybrid Search schema.
 See [storage and migration](docs/setup.md#markdown-storage-and-migration).
 
 ### Visual-rich PDFs

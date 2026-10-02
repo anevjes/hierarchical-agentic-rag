@@ -66,6 +66,15 @@ def ingestion_clients(text="First page. Second page.", split=12):
         search=AsyncMock(return_value=empty_results()),
         delete_documents=AsyncMock(),
     )
+    async def embed(**kwargs):
+        return SimpleNamespace(
+            data=[
+                SimpleNamespace(index=i, embedding=[0.1] * kwargs["dimensions"])
+                for i in range(len(kwargs["input"]))
+            ]
+        )
+
+    search.embedding_client = Mock(embeddings=Mock(create=AsyncMock(side_effect=embed)))
     return blob, source, pages, cu, search
 
 
@@ -90,7 +99,7 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     text = "# First \U0001f600 page\n\n<table><tr><td>Exception.</td></tr></table>"
     split = text.index("<table>")
     blob, source, pages, di, search = ingestion_clients(text, split)
-    count = await ingest_pdf("a.pdf", settings, source, pages, di, search)
+    count = await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     assert count == 2
     kwargs = di.begin_analyze.call_args.kwargs
     assert kwargs["processing_location"] == "geography"
@@ -120,6 +129,10 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     uploaded = search.upload_documents.call_args.kwargs["documents"]
     assert [chunk["page_number"] for chunk in uploaded] == [1, 2]
     assert uploaded[1]["source_etag"] == '"v1"'
+    assert len(uploaded[0]["content_vector"]) == settings.embedding_dimensions
+    assert search.embedding_client.embeddings.create.call_args.kwargs["input"] == [
+        text[:split], text[split:]
+    ]
 
 
 async def test_changed_pdf_not_published(settings):
@@ -129,7 +142,7 @@ async def test_changed_pdf_not_published(settings):
         ResourceModifiedError("changed"),
     ]
     with pytest.raises(ResourceModifiedError):
-        await ingest_pdf("a.pdf", settings, source, pages, di, search)
+        await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     pages.upload_blob.assert_not_called()
     search.upload_documents.assert_not_called()
 
@@ -140,7 +153,7 @@ async def test_index_partial_failure_is_explicit(settings):
         SimpleNamespace(succeeded=False, key="chunk", error_message="quota"),
     ]
     with pytest.raises(RuntimeError, match="quota"):
-        await ingest_pdf("a.pdf", settings, source, pages, di, search)
+        await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     search.search.assert_not_called()
 
 
@@ -148,7 +161,7 @@ async def test_oversized_pdf_rejected_before_download(settings):
     blob, source, pages, di, search = ingestion_clients()
     settings.max_pdf_bytes = 20
     with pytest.raises(ValueError, match="max_pdf_bytes"):
-        await ingest_pdf("a.pdf", settings, source, pages, di, search)
+        await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     blob.download_blob.assert_not_called()
     di.begin_analyze.assert_not_called()
 
@@ -177,7 +190,7 @@ async def test_source_and_manifest_provenance(settings, document, hit):
 async def test_ingestion_logs_stages_without_document_content(settings, caplog):
     caplog.set_level(logging.DEBUG, logger="hierarchical_rag.ingestion")
     _, source, pages, cu, search = ingestion_clients("PRIVATE-PDF-TEXT", 8)
-    await ingest_pdf("a.pdf", settings, source, pages, cu, search)
+    await ingest_pdf("a.pdf", settings, source, pages, cu, search, search.embedding_client)
     messages = [record.getMessage() for record in caplog.records]
     stages = [
         "Ingesting a.pdf",
@@ -221,7 +234,8 @@ async def test_ingestion_logs_batch_progress(settings, caplog):
 
     search.search.return_value = stale_results()
     search.delete_documents.return_value = [SimpleNamespace(succeeded=True)]
-    assert await ingest_pdf("a.pdf", settings, source, pages, cu, search) == 102
+    count = await ingest_pdf("a.pdf", settings, source, pages, cu, search, search.embedding_client)
+    assert count == 102
     assert "Index uploads for a.pdf: 100/102 chunks complete" in caplog.text
     assert "Index uploads for a.pdf: 102/102 chunks complete" in caplog.text
     assert "Stale cleanup for a.pdf: 100/101 chunks removed" in caplog.text
@@ -247,7 +261,7 @@ async def test_failure_never_logs_ingestion_completion(settings, caplog, stage):
         search.search.return_value = stale_results()
         search.delete_documents.return_value = [SimpleNamespace(succeeded=False)]
     with pytest.raises(RuntimeError):
-        await ingest_pdf("a.pdf", settings, source, pages, cu, search)
+        await ingest_pdf("a.pdf", settings, source, pages, cu, search, search.embedding_client)
     assert "Ingestion complete" not in caplog.text
     if stage == "index":
         assert "stale cleanup will not run" in caplog.text

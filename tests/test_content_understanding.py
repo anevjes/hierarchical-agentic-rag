@@ -38,9 +38,9 @@ async def test_visual_markdown_is_indexed_cached_searched_and_opened(settings):
             }
         )
     ]
-    await ingest_pdf("survey.pdf", settings, source, pages, cu, search)
+    await ingest_pdf("survey.pdf", settings, source, pages, cu, search, search.embedding_client)
     chunks = [
-        Chunk.model_validate(value)
+        Chunk.model_validate({key: item for key, item in value.items() if key != "content_vector"})
         for value in search.upload_documents.call_args.kwargs["documents"]
     ]
     assert "basement conductor" in chunks[0].content
@@ -118,7 +118,7 @@ async def test_incomplete_or_invalid_analysis_never_publishes(settings, failure,
         settings.max_document_pages = 1
     cu.begin_analyze.return_value.result.return_value = AnalysisResult(wire)
     with pytest.raises(ValueError, match=match):
-        await ingest_pdf("survey.pdf", settings, source, pages, cu, search)
+        await ingest_pdf("survey.pdf", settings, source, pages, cu, search, search.embedding_client)
     pages.upload_blob.assert_not_called()
     search.upload_documents.assert_not_called()
 

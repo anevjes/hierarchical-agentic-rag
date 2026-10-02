@@ -80,7 +80,7 @@
       "y": 145,
       "width": 460,
       "height": 110,
-      "text": "Original question -> IQ semantic intent\nSelect bounded chunk references\nRegister required physical pages",
+      "text": "Question -> IQ hybrid retrieval\nSelect bounded chunk references\nRegister required physical pages",
       "fontSize": 18,
       "fontFamily": 2,
       "strokeColor": "#000000",
@@ -106,7 +106,7 @@
       "updated": 1790907945869,
       "link": null,
       "locked": false,
-      "originalText": "Original question -> IQ semantic intent\nSelect bounded chunk references\nRegister required physical pages",
+      "originalText": "Question -> IQ hybrid retrieval\nSelect bounded chunk references\nRegister required physical pages",
       "autoResize": true,
       "lineHeight": 2.0370370370370368
     },

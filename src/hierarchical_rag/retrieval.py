@@ -63,6 +63,7 @@ def retrieval_request(query: str, source_name: str) -> KnowledgeBaseRetrievalReq
         raise ValueError("Search query must not be empty")
     return KnowledgeBaseRetrievalRequest(
         include_activity=True,
+        # IQ vectorizes this text through the index vectorizer and combines text/vector retrieval.
         intents=[KnowledgeRetrievalSemanticIntent(search=query)],
         knowledge_source_params=[
             SearchIndexKnowledgeSourceParams(

@@ -3,7 +3,7 @@
 ## Data plane
 
 `Blob PDF -> Content Understanding visual-enriched Markdown -> page/full Markdown blobs + JSON
-manifest + Search chunks -> knowledge source -> knowledge base`
+manifest + embedded Search chunks -> hybrid knowledge source -> knowledge base`
 
 The knowledge base and knowledge source are real Azure AI Search data-plane
 objects underlying Foundry IQ. They are not local aliases or a separate,
@@ -24,6 +24,34 @@ Unicode code-point offsets match Python string indexing, including emoji.
 Out-of-range, overlapping, or out-of-order spans are rejected. A single
 unsegmented document with contiguous pages is required. Service warnings and
 figures without spans contained in a physical page are errors, not partial success.
+
+### Hybrid retrieval
+
+The ingester embeds each exact chunk's enriched Markdown using Azure OpenAI,
+then pushes its text/provenance plus `content_vector`. It batches embedding
+requests (16 inputs) within Search upload batches (100 records) and validates
+response indices, dimensions, finite values and nonzero vectors.
+Embedding failures stop ingestion; no empty-vector/text-only fallback is used.
+Previously indexed revisions are removed only after all new uploads succeed.
+
+Search uses a non-retrievable, non-stored vector field with HNSW/cosine and a
+query vectorizer configured for the same endpoint, deployment, model and
+dimensions as ingestion. The index retains searchable text and its semantic
+configuration. The IQ knowledge source explicitly searches both text and vector
+fields; a natural-language semantic intent drives parallel text/vector retrieval
+and semantic ranking. The application does not send unsupported vector-query
+parameters to the stable IQ retrieve API.
+
+The application embeds chunks with `DefaultAzureCredential`; Search embeds
+queries using its own system-assigned managed identity. Both need access to the
+embedding deployment. Embeddings never enter `Chunk`, source-data references,
+Markdown artifacts, the evidence ledger, or the writer's prompt. Only indexed
+upload records have the vector field.
+
+Ingestion preflights the index embedding contract; provisioning rejects changes
+that would mix embedding models/spaces. A text-only index can gain the vector
+field, but its old documents remain unvectorized until re-ingestion. See the
+[migration procedure](setup.md#hybrid-vector-retrieval-and-migration).
 
 ### Versioned Markdown artifacts
 
@@ -164,8 +192,9 @@ Duplicate queries/pages do not return their text again or count twice as evidenc
 - No automatic access-control propagation. Application RBAC is not end-user ACL
   trimming. Add caller-scoped filtering before returning hits **and** enforce the
   same policy when reading source/page blobs.
-- Keyword + semantic-ranked retrieval; add an embedding field and compatible
-  index vectorizer if a project needs hybrid retrieval.
+- Hybrid keyword/vector retrieval with semantic ranking still requires domain
+  evaluation for recall and ranking quality. In-document `search_document` is
+  intentionally a keyword locator over cached pages.
 - Native Blob knowledge sources are an alternative, not an additional duplicate
   ingestion path. Adopt one only after verifying their page metadata contract.
 - Ingestion is explicit, sequential, and not transactional across Blob and Search.

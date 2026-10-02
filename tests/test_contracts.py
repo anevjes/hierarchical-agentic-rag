@@ -21,15 +21,30 @@ from hierarchical_rag.retrieval import AzureEvidenceBackend, parse_references, r
 
 def test_stable_sdk_serialization(settings):
     index = index_definition(settings).as_dict()
-    assert {f["name"] for f in index["fields"]} == set(Chunk.model_fields)
-    assert all(f["retrievable"] for f in index["fields"])
+    assert {f["name"] for f in index["fields"]} == set(Chunk.model_fields) | {"content_vector"}
+    assert all(f["retrievable"] for f in index["fields"] if f["name"] != "content_vector")
+    vector = next(field for field in index["fields"] if field["name"] == "content_vector")
+    assert vector["dimensions"] == settings.embedding_dimensions
+    assert vector["type"] == "Collection(Edm.Single)"
+    assert vector["searchable"] is True
+    assert vector["retrievable"] is False and vector["stored"] is False
+    profile = index["vectorSearch"]["profiles"][0]
+    assert vector["vectorSearchProfile"] == profile["name"]
+    assert profile["vectorizer"] == index["vectorSearch"]["vectorizers"][0]["name"]
+    params = index["vectorSearch"]["vectorizers"][0]["azureOpenAIParameters"]
+    assert params == {
+        "resourceUri": settings.embedding_endpoint,
+        "deploymentId": settings.embedding_deployment,
+        "modelName": settings.embedding_model,
+    }
+    assert index["vectorSearch"]["algorithms"][0]["hnswParameters"]["metric"] == "cosine"
     assert index["semantic"]["defaultConfiguration"] == "page-content"
     source = knowledge_source_definition(settings).as_dict()
     assert source["kind"] == "searchIndex"
     params = source["searchIndexParameters"]
     assert params["semanticConfigurationName"] == "page-content"
     assert {f["name"] for f in params["sourceDataFields"]} == set(Chunk.model_fields)
-    assert params["searchFields"] == [{"name": "content"}]
+    assert params["searchFields"] == [{"name": "content"}, {"name": "content_vector"}]
     kb = knowledge_base_definition(settings).as_dict()
     assert kb["knowledgeSources"] == [{"name": settings.knowledge_source_name}]
     assert "models" not in kb and "outputMode" not in kb

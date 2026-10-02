@@ -258,7 +258,7 @@ async def test_missing_markdown_response_fails_before_publishing(settings):
     result = await di.begin_analyze.return_value.result()
     result.contents[0].markdown = None
     with pytest.raises(ValueError, match="must return Markdown"):
-        await ingest_pdf("a.pdf", settings, source, pages, di, search)
+        await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     pages.upload_blob.assert_not_called()
     search.upload_documents.assert_not_called()
 
@@ -267,7 +267,7 @@ async def test_failed_page_write_does_not_publish_manifest_or_index(settings):
     _, source, pages, di, search = ingestion_clients()
     pages.upload_blob.side_effect = [None, RuntimeError("upload failed")]
     with pytest.raises(RuntimeError, match="upload failed"):
-        await ingest_pdf("a.pdf", settings, source, pages, di, search)
+        await ingest_pdf("a.pdf", settings, source, pages, di, search, search.embedding_client)
     assert all(
         not call.kwargs["name"].endswith(".json") for call in pages.upload_blob.call_args_list
     )
@@ -276,12 +276,15 @@ async def test_failed_page_write_does_not_publish_manifest_or_index(settings):
 
 async def test_ingested_artifacts_are_readable_by_investigation(settings):
     _, source, pages, di, search = ingestion_clients("# Policy\n\nFloods are excluded.", 10)
-    await ingest_pdf("policies/policy.pdf", settings, source, pages, di, search)
+    await ingest_pdf(
+        "policies/policy.pdf", settings, source, pages, di, search, search.embedding_client
+    )
     blobs = MemoryBlobContainer(
         {call.kwargs["name"]: call.kwargs["data"] for call in pages.upload_blob.call_args_list}
     )
     chunks = [
-        Chunk.model_validate(data) for data in search.upload_documents.call_args.kwargs["documents"]
+        Chunk.model_validate({key: value for key, value in data.items() if key != "content_vector"})
+        for data in search.upload_documents.call_args.kwargs["documents"]
     ]
     backend = AzureEvidenceBackend(settings, Mock(), source, blobs)
     backend.retrieve = AsyncMock(return_value=[chunks[0]])

@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     )
     foundry_project_endpoint: str
     model_deployment: str
+    embedding_endpoint: str
+    embedding_deployment: str = "text-embedding-3-large"
+    embedding_model: Literal["text-embedding-3-large", "text-embedding-3-small"] = (
+        "text-embedding-3-large"
+    )
+    embedding_dimensions: int = Field(default=3072, ge=1, le=3072)
     chunk_chars: int = Field(default=2400, ge=200, le=12000)
     chunk_overlap: int = Field(default=200, ge=0)
     max_pdf_bytes: int = Field(default=50_000_000, ge=1)
@@ -39,6 +45,7 @@ class Settings(BaseSettings):
         "search_endpoint",
         "content_understanding_endpoint",
         "foundry_project_endpoint",
+        "embedding_endpoint",
     )
     @classmethod
     def https_endpoint(cls, value: str) -> str:
@@ -49,7 +56,9 @@ class Settings(BaseSettings):
             raise ValueError("Endpoint credentials are not supported")
         return value.rstrip("/")
 
-    @field_validator("model_deployment", "content_understanding_analyzer")
+    @field_validator(
+        "model_deployment", "content_understanding_analyzer", "embedding_deployment"
+    )
     @classmethod
     def nonempty(cls, value: str) -> str:
         if not value.strip():
@@ -69,4 +78,6 @@ class Settings(BaseSettings):
             raise ValueError("Source and derived-page containers must differ")
         if self.chunk_overlap >= self.chunk_chars:
             raise ValueError("chunk_overlap must be smaller than chunk_chars")
+        if self.embedding_model == "text-embedding-3-small" and self.embedding_dimensions > 1536:
+            raise ValueError("text-embedding-3-small supports at most 1536 embedding dimensions")
         return self

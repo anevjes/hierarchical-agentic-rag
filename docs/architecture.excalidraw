@@ -357,7 +357,7 @@
       "y": 230,
       "width": 290,
       "height": 120,
-      "text": "Azure AI Search index\nPage-bounded text chunks\nKeyword + semantic ranking",
+      "text": "Azure AI Search index\nChunk text + embeddings\nHybrid + semantic ranking",
       "fontSize": 17,
       "fontFamily": 2,
       "strokeColor": "#000000",
@@ -383,7 +383,7 @@
       "updated": 1790908024115,
       "link": null,
       "locked": false,
-      "originalText": "Azure AI Search index\nPage-bounded text chunks\nKeyword + semantic ranking",
+      "originalText": "Azure AI Search index\nChunk text + embeddings\nHybrid + semantic ranking",
       "autoResize": true,
       "lineHeight": 2.3529411764705883
     },
