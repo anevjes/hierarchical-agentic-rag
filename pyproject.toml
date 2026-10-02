@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hierarchical-agentic-rag"
+version = "0.1.0"
+description = "Page-aware Foundry IQ investigation with Microsoft Agent Framework"
+requires-python = ">=3.11"
+dependencies = [
+    "agent-framework-core==1.19.0",
+    "agent-framework-foundry==1.13.1",
+    "azure-search-documents==12.0.0",
+    "azure-ai-documentintelligence==1.0.2",
+    "azure-storage-blob==12.31.0",
+    "azure-identity==1.26.0",
+    "pydantic>=2.11,<3",
+    "pydantic-settings>=2.9,<3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pytest-asyncio>=1,<2", "ruff>=0.12", "mypy>=1.15", "build>=1.2"]
+
+[project.scripts]
+hrag = "hierarchical_rag.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hierarchical_rag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["src"]
+

@@ -1,0 +1,24 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Investigate PDFs (configured Azure)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "hierarchical_rag.cli",
+      "python": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": ["ask", "${input:question}"],
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}\\.env",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ],
+  "inputs": [
+    {
+      "id": "question",
+      "type": "promptString",
+      "description": "Question to investigate in the configured knowledge base"
+    }
+  ]
+}

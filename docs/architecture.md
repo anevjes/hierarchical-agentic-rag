@@ -1,0 +1,166 @@
+# Design: retrieve, inspect, expand, assess
+
+## Data plane
+
+`Blob PDF -> Document Intelligence Markdown -> page/full Markdown blobs + JSON
+manifest + Search chunks -> knowledge source -> knowledge base`
+
+The knowledge base and knowledge source are real Azure AI Search data-plane
+objects underlying Foundry IQ. They are not local aliases or a separate,
+invented "Foundry IQ index" API. The physical index lives in Search. A Foundry
+portal project must be connected to that Search service to discover/use its
+knowledge bases through the portal; creating the data-plane objects does not
+automatically create that project connection.
+
+Each extraction gets a new revision. The original Blob ETag is checked before
+download and again before publishing. Each chunk stays inside one physical page.
+Ingestion requests `output_content_format="markdown"` and
+`string_index_type="unicodeCodePoint"`. The service must report those formats in
+its result; otherwise ingestion fails explicitly. Each physical page's Markdown
+comes from that page's Document Intelligence `spans`, not from splitting on
+headings, printed page numbers, or literal `<!-- PageBreak -->` comments.
+Unicode code-point offsets match Python string indexing, including emoji.
+Out-of-range, overlapping, or out-of-order spans within a page are rejected.
+
+### Versioned Markdown artifacts
+
+All artifacts live in the private derived container:
+
+| Artifact | Content |
+|---|---|
+| `<document-id>/<revision>.json` | Schema-v2 manifest: source identity/ETag, full-Markdown path/hash/length, and each physical page's path/hash/length/spans |
+| `<document-id>/<revision>/document.md` | Complete, unmodified Document Intelligence Markdown |
+| `<document-id>/<revision>/pages/0001.md` | Page 1's Markdown; analogous files for every page, including blank pages |
+
+The manifest contains **no inline page text**. Markdown blobs are uploaded first,
+then the manifest, then the Search chunks. A failed Markdown upload cannot publish
+a new manifest/index revision. Incomplete uploads can leave orphaned blobs and
+require operational cleanup; this is not a cross-service transaction.
+
+SHA-256 hashes and character lengths verify that retrieved Markdown matches its
+manifest. Page paths must match the document's canonical revision paths; a
+manifest cannot redirect the reader to another blob. Hashes detect accidental
+artifact corruption/mismatch, not malicious modification by an identity allowed
+to rewrite both manifest and Markdown.
+
+### Reading and searching without re-extraction
+
+The first document access checks the original PDF's ETag and loads its manifest,
+validating identity and physical pagination. Then:
+
+- `open_pages` downloads **only requested uncached page Markdown blobs**. It
+  verifies their hashes and any retrieved chunks on those pages before accepting
+  evidence. It does not download the full Markdown for an individual page read.
+- `search_document` downloads the **full Markdown once** if some pages are not
+  cached. It slices the exact stored spans and verifies each page's hash. All page
+  text is then cached, so repeated searches and subsequent opens need no further
+  content downloads. If all pages were already cached, it skips this download.
+- Reading text internally for keyword search does **not** mark those pages as
+  opened grounding evidence. The model receives page locations and must still call
+  `open_pages` for the pages it wants to use in its sufficiency assessment.
+- A missing or corrupt blob fails explicitly; the reader does not silently fall
+  back to PDF OCR, an empty page, or a different revision.
+
+This is stored OCR/layout Markdown, not rendered PDF pixels, and neither tool
+re-extracts the PDF. MAF sees headings, paragraphs, and table markup as data.
+Document Intelligence can emit **HTML tables inside Markdown**. Page-local slices
+can be fragments of structures spanning pages, rather than independently
+renderable Markdown/HTML. The full-document artifact preserves the complete
+service output; adjacent page expansion provides surrounding evidence.
+Image/figure references may be present, but this accelerator does not download
+their image assets or follow embedded links.
+
+Caches are scoped to one investigation, not shared across callers. A source can
+change after its ETag check; the evidence records a versioned snapshot, not a
+transactional lock over the original Blob.
+
+### Compatibility
+
+Schema-v1 inline-page JSON is still supported, with an explicit migration warning.
+It necessarily loads all page text on first access and needs no additional
+Markdown reads. New ingestion always writes schema v2. Re-ingesting an existing
+PDF produces the Markdown artifacts and replaces its old indexed chunks, without
+changing the Search schema. Old revisions are not rewritten in place.
+
+PDF links use `#page=N`, where N is the **1-based physical PDF page**, not the
+printed page label. They are private URLs, not SAS tokens. Browser access depends
+on the caller's storage permissions and PDF viewer; an authenticated document
+viewer may be needed. An overwritten URL no longer displays the old revision.
+For durable historical links, enable Blob versioning and extend ingestion and
+link generation to persist version IDs.
+
+## Investigation
+
+Each question gets fresh mutable state; never share an `Investigation` between
+users or concurrent requests.
+
+1. Mandatory IQ retrieval seeds the investigation. Source data is parsed into
+   typed chunks. Unexpected reference kinds or missing provenance are errors.
+   Partial HTTP 206 results and failed retrieval activities are rejected rather
+   than being treated as complete grounding evidence.
+2. A configurable number of returned references is selected. The limit and total
+   count are explicit in the tool response. Selected hit pages become required.
+3. The MAF investigator uses real function tools:
+   - `open_pages(document_id, start_page, end_page)`: complete page Markdown
+     (plain text for legacy revisions).
+   - `search_document(document_id, query)`: keyword-based page locator over the
+     full extracted PDF, including pages that were not top Search hits.
+   - `search_knowledge_base(query)`: cross-document exploration or reformulation.
+4. MAF's native function-invocation loop executes calls serially. Application
+   counters enforce strict limits before work, in addition to framework limits.
+5. The investigator returns a structured assessment, not an answer. If gaps
+   remain and it made progress, the session continues. No-progress and exhausted
+   budgets stop investigation.
+6. A code gate requires retrieved hits, all selected hit pages opened, known
+   evidence IDs, and no declared gaps. Only then can a separate, tool-free writer
+   synthesize the answer from approved page evidence.
+7. Every citation must name an approved opened page and quote an exact substring.
+   This catches fabricated IDs/quotes; it does **not** mathematically establish
+   that every claim follows from its citations. Sufficiency and entailment remain
+   model judgments and require domain evaluation.
+
+Chunks, PDF content, titles, and tool results are untrusted **data**, never agent
+instructions. The model supplies document IDs, not URLs; the backend always uses
+configured Storage clients. A model cannot ask the page reader to fetch arbitrary
+Internet URLs.
+
+## Budgets
+
+The defaults allow 20 tool calls (including seed retrieval), four knowledge-base
+searches, eight hits per search, 24 unique opened pages, 100,000 evidence-text
+characters, and 180 seconds for the complete query.
+
+The character counter includes newly delivered chunks and opened pages. It is
+not a tokenizer or a limit on total billed tokens: prompts, JSON metadata,
+reasoning, repeated model inputs, and output consume extra tokens. Choose budgets
+that fit your model's context window. Whole pages are never silently truncated.
+An oversized page or range produces an explicit budget stop with no answer.
+Duplicate queries/pages do not return their text again or count twice as evidence.
+
+## Known limitations / extension points
+
+- PDFs only. Word, HTML, and slide navigation need separate location contracts.
+- OCR/layout Markdown only; graphs, images, complex visual tables, handwriting,
+  and reading order may require multimodal page rendering or human review.
+- No automatic access-control propagation. Application RBAC is not end-user ACL
+  trimming. Add caller-scoped filtering before returning hits **and** enforce the
+  same policy when reading source/page blobs.
+- Keyword + semantic-ranked retrieval; add an embedding field and compatible
+  index vectorizer if a project needs hybrid retrieval.
+- Native Blob knowledge sources are an alternative, not an additional duplicate
+  ingestion path. Adopt one only after verifying their page metadata contract.
+- Ingestion is explicit, sequential, and not transactional across Blob and Search.
+  Run one writer per source document. New chunks upload before old revisions are
+  removed; queries during an update can fail closed on mixed/stale revisions.
+  Rerun ingestion after partial failures. An operator can remove stale revisions
+  after verifying a successful publish.
+- Deleted original PDFs fail page opening; they are not automatically purged
+  from Search. Add reconciliation/deletion handling before production use.
+- Old manifests and Markdown blobs are retained for audit; configure a
+  retention/cleanup job that preserves every artifact of revisions still
+  referenced by the index and ongoing queries. Remove orphaned failed-upload
+  revisions only after confirming that no index entries refer to them.
+- A source may change after an ETag check. The returned evidence is a versioned
+  snapshot, not a promise about the latest file at answer time.
+- No web server/hosted runtime is included. The Python API and CLI are intended
+  for reuse behind project-specific identity, authorization, and hosting layers.
