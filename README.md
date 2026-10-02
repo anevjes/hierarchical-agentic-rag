@@ -107,6 +107,20 @@ Use `hrag ingest` without `--blob` to process all PDFs in the source container;
 `--prefix "manuals/"` narrows the scan. Non-PDF blobs are reported and skipped.
 Put PDFs into the source container with your normal Azure upload tooling first.
 
+Ingestion shows timestamped progress by default: download, Content Understanding
+analysis, artifact uploads, chunk indexing, stale-chunk cleanup, and elapsed times.
+For individual page-upload details and the CU operation ID:
+
+```powershell
+hrag --verbose ingest --blob "manuals/product.pdf"
+# Optionally retain progress/error logs (stderr):
+hrag ingest --blob "manuals/product.pdf" 2> ingest.log
+```
+
+CU analysis can take several minutes; the submission/wait message remains the
+last progress message until it completes or fails. Progress logs omit document
+content, but include blob names and revision/operation IDs; keep log files private.
+
 `provision` creates/updates the Search index, knowledge source, and knowledge base.
 It does **not** provision an Azure subscription, Search service, Storage account,
 Foundry project/model, or Content Understanding configuration. It also checks that the

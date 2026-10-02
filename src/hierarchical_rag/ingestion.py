@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 from collections.abc import Iterable
+from time import perf_counter
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -179,12 +180,16 @@ async def ingest_pdf(
     intelligence: ContentUnderstandingClient,
     search: SearchClient,
 ) -> int:
+    started = perf_counter()
+    logger.info("Ingesting %s: reading source blob properties", blob_name)
     if not blob_name.lower().endswith(".pdf"):
         raise ValueError(f"Only PDF blobs are supported: {blob_name}")
     blob = source.get_blob_client(blob_name)
     props = await blob.get_blob_properties()
     if props.size > settings.max_pdf_bytes:
         raise ValueError(f"PDF exceeds max_pdf_bytes: {blob_name}")
+    stage_started = perf_counter()
+    logger.info("Downloading %s: %d bytes", blob_name, props.size)
     download = await blob.download_blob(
         etag=props.etag,
         match_condition=MatchConditions.IfNotModified,
@@ -192,14 +197,36 @@ async def ingest_pdf(
     data = await download.readall()
     if b"%PDF-" not in data[:1024]:
         raise ValueError(f"Blob is not a PDF: {blob_name}")
+    logger.info(
+        "Downloaded %s: %d bytes in %.1fs", blob_name, len(data), perf_counter() - stage_started
+    )
+    stage_started = perf_counter()
+    logger.info(
+        "Analyzing %s with Content Understanding: analyzer=%s, processing_location=%s",
+        blob_name,
+        settings.content_understanding_analyzer,
+        settings.content_understanding_processing_location,
+    )
     poller = await intelligence.begin_analyze(
         settings.content_understanding_analyzer,
         inputs=[AnalysisInput(data=data, mime_type="application/pdf")],
         model_deployments=settings.content_understanding_model_deployments or None,
         processing_location=settings.content_understanding_processing_location,
     )
+    logger.info(
+        "Analysis submitted for %s; waiting for Content Understanding (may take several minutes)",
+        blob_name,
+    )
+    logger.debug("Content Understanding operation for %s: %s", blob_name, poller.operation_id)
     result = await poller.result()
     content, extracted, page_spans = extract_pages(result, settings)
+    logger.info(
+        "Analysis validated for %s: %d pages, %d Markdown characters in %.1fs",
+        blob_name,
+        len(extracted),
+        len(content),
+        perf_counter() - stage_started,
+    )
     url = source_url(settings, blob_name)
     doc = Document(
         document_id=document_id(url),
@@ -219,7 +246,15 @@ async def ingest_pdf(
         analysis_sha256=hashlib.sha256(analysis).hexdigest(),
     )
     # Do not publish evidence for a PDF that changed while extraction was running.
+    logger.info("Rechecking source version before publishing %s", blob_name)
     await blob.get_blob_properties(etag=props.etag, match_condition=MatchConditions.IfNotModified)
+    stage_started = perf_counter()
+    logger.info(
+        "Uploading artifacts for %s: revision=%s, %d pages plus Markdown, analysis and manifest",
+        blob_name,
+        doc.revision,
+        len(doc.pages),
+    )
     for extracted_page, reference in zip(doc.pages, manifest.pages, strict=True):
         await pages.upload_blob(
             name=reference.markdown_blob,
@@ -227,18 +262,34 @@ async def ingest_pdf(
             overwrite=False,
             content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
         )
+        logger.debug(
+            "Uploaded page %d/%d for %s: %d characters",
+            extracted_page.number,
+            len(doc.pages),
+            blob_name,
+            len(extracted_page.text),
+        )
+        if extracted_page.number % 25 == 0 or extracted_page.number == len(doc.pages):
+            logger.info(
+                "Page uploads for %s: %d/%d complete",
+                blob_name,
+                extracted_page.number,
+                len(doc.pages),
+            )
     await pages.upload_blob(
         name=manifest.markdown_blob,
         data=content.encode("utf-8"),
         overwrite=False,
         content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
     )
+    logger.debug("Uploaded full-document Markdown for %s", blob_name)
     await pages.upload_blob(
         name=manifest.extraction.analysis_blob,
         data=analysis,
         overwrite=False,
         content_settings=ContentSettings(content_type="application/json"),
     )
+    logger.debug("Uploaded raw analysis JSON for %s", blob_name)
     # Publish the manifest last so it never points to Markdown that has not been uploaded.
     await pages.upload_blob(
         name=manifest_name(doc.document_id, doc.revision),
@@ -246,16 +297,43 @@ async def ingest_pdf(
         overwrite=False,
         content_settings=ContentSettings(content_type="application/json"),
     )
+    logger.info(
+        "Artifacts published for %s: %d blobs in %.1fs",
+        blob_name,
+        len(doc.pages) + 3,
+        perf_counter() - stage_started,
+    )
     chunks = list(chunks_for(doc, settings.chunk_chars, settings.chunk_overlap))
+    stage_started = perf_counter()
+    logger.info(
+        "Indexing %s: %d chunks into %s (batches of up to 100)",
+        blob_name,
+        len(chunks),
+        settings.index_name,
+    )
     for start in range(0, len(chunks), 100):
         results = await search.upload_documents(
             documents=[chunk.model_dump() for chunk in chunks[start : start + 100]],
         )
         failures = [r for r in results if not r.succeeded]
         if failures:
+            logger.error(
+                "Index batch failed for %s: %d failed chunks; stale cleanup will not run",
+                blob_name,
+                len(failures),
+            )
             details = [(r.key, r.error_message) for r in failures]
             raise RuntimeError(f"Index upload failed: {details}")
+        logger.info(
+            "Index uploads for %s: %d/%d chunks complete",
+            blob_name,
+            min(start + 100, len(chunks)),
+            len(chunks),
+        )
+    logger.info("Indexing finished for %s in %.1fs", blob_name, perf_counter() - stage_started)
     # Upload the new revision first. Any partial failure remains visible to the operator.
+    stage_started = perf_counter()
+    logger.info("Looking for stale indexed chunks for %s", blob_name)
     old = await search.search(
         search_text="*",
         filter=(
@@ -265,9 +343,25 @@ async def ingest_pdf(
         select=["id"],
     )
     stale = [{"id": row["id"]} async for row in old]
+    logger.info("Found %d stale indexed chunks for %s", len(stale), blob_name)
     for start in range(0, len(stale), 100):
         deleted = await search.delete_documents(documents=stale[start : start + 100])
         if any(not item.succeeded for item in deleted):
+            logger.error("Stale-chunk removal failed for %s; new revision is indexed", blob_name)
             raise RuntimeError("New revision indexed but stale-chunk removal failed; rerun ingest")
-    logger.info("Indexed %s: %d pages, %d chunks", blob_name, len(doc.pages), len(chunks))
+        logger.info(
+            "Stale cleanup for %s: %d/%d chunks removed",
+            blob_name,
+            min(start + 100, len(stale)),
+            len(stale),
+        )
+    logger.info("Stale cleanup finished for %s in %.1fs", blob_name, perf_counter() - stage_started)
+    logger.info(
+        "Ingestion complete for %s: %d pages, %d chunks, revision=%s, elapsed=%.1fs",
+        blob_name,
+        len(doc.pages),
+        len(chunks),
+        doc.revision,
+        perf_counter() - started,
+    )
     return len(chunks)

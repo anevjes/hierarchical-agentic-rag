@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 from contextlib import AsyncExitStack
+from time import perf_counter
 
 from agent_framework.foundry import FoundryChatClient
 from azure.ai.contentunderstanding.aio import ContentUnderstandingClient
@@ -47,6 +48,7 @@ async def run(args: argparse.Namespace) -> None:
             await provision(settings, index_client)
             logger.info("Index, knowledge source, and knowledge base are ready")
         elif args.command == "ingest":
+            started = perf_counter()
             search = await stack.enter_async_context(
                 SearchClient(
                     settings.search_endpoint,
@@ -63,19 +65,35 @@ async def run(args: argparse.Namespace) -> None:
                 )
             )
             count = 0
+            total_chunks = 0
             if args.blob:
-                await ingest_pdf(args.blob, settings, source, pages, intelligence, search)
+                total_chunks = await ingest_pdf(
+                    args.blob, settings, source, pages, intelligence, search
+                )
                 count = 1
             else:
+                logger.info(
+                    "Scanning source container %s for PDFs with prefix=%r",
+                    settings.source_container,
+                    args.prefix,
+                )
                 async for blob in source.list_blobs(name_starts_with=args.prefix):
                     if not blob.name.lower().endswith(".pdf"):
                         logger.warning("Skipping non-PDF blob: %s", blob.name)
                         continue
-                    await ingest_pdf(blob.name, settings, source, pages, intelligence, search)
+                    logger.info("Processing PDF %d: %s", count + 1, blob.name)
+                    total_chunks += await ingest_pdf(
+                        blob.name, settings, source, pages, intelligence, search
+                    )
                     count += 1
             if not count:
                 raise ValueError("No PDF blobs matched the ingestion request")
-            logger.info("Ingested %d PDF(s)", count)
+            logger.info(
+                "Ingested %d PDF(s), %d chunks in %.1fs",
+                count,
+                total_chunks,
+                perf_counter() - started,
+            )
         elif args.command == "ask":
             kb = await stack.enter_async_context(
                 KnowledgeBaseRetrievalClient(
@@ -121,7 +139,8 @@ def main() -> None:
     args = parser.parse_args()
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
-        format="%(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     logging.getLogger("azure").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)

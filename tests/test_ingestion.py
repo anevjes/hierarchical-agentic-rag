@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -57,7 +58,7 @@ def ingestion_clients(text="First page. Second page.", split=12):
     pages = Mock(upload_blob=AsyncMock())
     cu = Mock(
         begin_analyze=AsyncMock(
-            return_value=Mock(result=AsyncMock(return_value=result)),
+            return_value=Mock(result=AsyncMock(return_value=result), operation_id="test-operation"),
         )
     )
     search = Mock(
@@ -171,3 +172,85 @@ async def test_source_and_manifest_provenance(settings, document, hit):
     source_blob.get_blob_properties.side_effect = ResourceModifiedError("stale index")
     with pytest.raises(ResourceModifiedError):
         await backend.load_document(hit)
+
+
+async def test_ingestion_logs_stages_without_document_content(settings, caplog):
+    caplog.set_level(logging.DEBUG, logger="hierarchical_rag.ingestion")
+    _, source, pages, cu, search = ingestion_clients("PRIVATE-PDF-TEXT", 8)
+    await ingest_pdf("a.pdf", settings, source, pages, cu, search)
+    messages = [record.getMessage() for record in caplog.records]
+    stages = [
+        "Ingesting a.pdf",
+        "Downloading a.pdf",
+        "Downloaded a.pdf",
+        "Analyzing a.pdf",
+        "Analysis submitted for a.pdf",
+        "Analysis validated for a.pdf: 2 pages",
+        "Rechecking source version",
+        "Uploading artifacts",
+        "Page uploads for a.pdf: 2/2 complete",
+        "Artifacts published for a.pdf: 5 blobs",
+        "Indexing a.pdf: 2 chunks",
+        "Index uploads for a.pdf: 2/2 chunks complete",
+        "Looking for stale",
+        "Found 0 stale",
+        "Stale cleanup finished",
+        "Ingestion complete for a.pdf",
+    ]
+    positions = [
+        next(i for i, message in enumerate(messages) if stage in message) for stage in stages
+    ]
+    assert positions == sorted(positions)
+    assert "elapsed=" in messages[-1]
+    assert "test-operation" in caplog.text
+    assert "Uploaded page 1/2" in caplog.text
+    assert "PRIVATE-" not in caplog.text
+    assert "PDF-TEXT" not in caplog.text
+    assert "%PDF-" not in caplog.text
+
+
+async def test_ingestion_logs_batch_progress(settings, caplog):
+    caplog.set_level(logging.INFO, logger="hierarchical_rag.ingestion")
+    settings.chunk_chars = 200
+    settings.chunk_overlap = 0
+    _, source, pages, cu, search = ingestion_clients("x" * 20_400, 20_200)
+
+    async def stale_results():
+        for i in range(101):
+            yield {"id": f"old-{i}"}
+
+    search.search.return_value = stale_results()
+    search.delete_documents.return_value = [SimpleNamespace(succeeded=True)]
+    assert await ingest_pdf("a.pdf", settings, source, pages, cu, search) == 102
+    assert "Index uploads for a.pdf: 100/102 chunks complete" in caplog.text
+    assert "Index uploads for a.pdf: 102/102 chunks complete" in caplog.text
+    assert "Stale cleanup for a.pdf: 100/101 chunks removed" in caplog.text
+    assert "Stale cleanup for a.pdf: 101/101 chunks removed" in caplog.text
+
+
+@pytest.mark.parametrize("stage", ["analysis", "artifacts", "index", "cleanup"])
+async def test_failure_never_logs_ingestion_completion(settings, caplog, stage):
+    caplog.set_level(logging.INFO, logger="hierarchical_rag.ingestion")
+    _, source, pages, cu, search = ingestion_clients()
+    if stage == "analysis":
+        cu.begin_analyze.return_value.result.side_effect = RuntimeError("analysis unavailable")
+    elif stage == "artifacts":
+        pages.upload_blob.side_effect = RuntimeError("storage unavailable")
+    elif stage == "index":
+        search.upload_documents.return_value = [
+            SimpleNamespace(succeeded=False, key="chunk", error_message="quota")
+        ]
+    else:
+        async def stale_results():
+            yield {"id": "old"}
+
+        search.search.return_value = stale_results()
+        search.delete_documents.return_value = [SimpleNamespace(succeeded=False)]
+    with pytest.raises(RuntimeError):
+        await ingest_pdf("a.pdf", settings, source, pages, cu, search)
+    assert "Ingestion complete" not in caplog.text
+    if stage == "index":
+        assert "stale cleanup will not run" in caplog.text
+        search.search.assert_not_called()
+    if stage == "cleanup":
+        assert "new revision is indexed" in caplog.text

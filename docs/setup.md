@@ -149,7 +149,14 @@ Ingest files after putting them in Blob Storage. CU analysis runs once per inges
 once per query. Re-ingestion produces a new extraction revision even for an
 unchanged PDF, and removes older chunks only after new uploads succeed.
 
-Use `--verbose` before the subcommand for application-level progress logs.
+Ingestion logs timestamped progress at INFO by default: source download, CU
+submission/wait and validated results, artifact publication, Search upload
+batches, stale-chunk cleanup, and completion counts/timings. Page-upload progress
+is reported every 25 pages and on the final page. CU may take several minutes;
+its wait message is not a percentage-complete estimate or a periodic heartbeat.
+Use `--verbose` before the subcommand for individual page-upload details and
+the CU operation ID. Application ingestion progress logs contain names, IDs,
+counts and timings, not PDF bytes, extracted text or raw analysis payloads.
 Query JSON is written to stdout; progress/errors go to stderr. Keep output files,
 logs, and any enabled framework traces private: they can contain document text.
 The accelerator does not enable content-bearing telemetry exporters by default.
