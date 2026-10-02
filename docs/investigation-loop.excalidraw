@@ -360,7 +360,7 @@
       "y": 915,
       "width": 460,
       "height": 130,
-      "text": "Tool-free answer writer\nOnly approved opened-page evidence\nValidate inline IDs + exact quotes\nReturn answer, chunks, pages, links",
+      "text": "Tool-free answer writer\nQualify generated visual claims\nValidate IDs + Markdown quotes\nReturn answer, chunks, pages, links",
       "fontSize": 18,
       "fontFamily": 2,
       "strokeColor": "#000000",
@@ -386,7 +386,7 @@
       "updated": 1790907945869,
       "link": null,
       "locked": false,
-      "originalText": "Tool-free answer writer\nOnly approved opened-page evidence\nValidate inline IDs + exact quotes\nReturn answer, chunks, pages, links",
+      "originalText": "Tool-free answer writer\nQualify generated visual claims\nValidate IDs + Markdown quotes\nReturn answer, chunks, pages, links",
       "autoResize": true,
       "lineHeight": 1.8055555555555556
     },

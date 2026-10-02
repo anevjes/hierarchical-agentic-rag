@@ -4,7 +4,7 @@ import logging
 from contextlib import AsyncExitStack
 
 from agent_framework.foundry import FoundryChatClient
-from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
+from azure.ai.contentunderstanding.aio import ContentUnderstandingClient
 from azure.core.exceptions import ResourceExistsError
 from azure.identity.aio import DefaultAzureCredential
 from azure.search.documents.aio import SearchClient
@@ -14,7 +14,7 @@ from azure.storage.blob.aio import BlobServiceClient
 
 from .agent import investigate
 from .config import Settings
-from .ingestion import ingest_pdf
+from .ingestion import CONTENT_UNDERSTANDING_API_VERSION, ingest_pdf
 from .investigation import Investigation
 from .provision import SEARCH_API_VERSION, provision
 from .retrieval import AzureEvidenceBackend
@@ -56,10 +56,10 @@ async def run(args: argparse.Namespace) -> None:
                 )
             )
             intelligence = await stack.enter_async_context(
-                DocumentIntelligenceClient(
-                    settings.document_intelligence_endpoint,
+                ContentUnderstandingClient(
+                    settings.content_understanding_endpoint,
                     credential,
-                    api_version="2024-11-30",
+                    api_version=CONTENT_UNDERSTANDING_API_VERSION,
                 )
             )
             count = 0

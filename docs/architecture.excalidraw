@@ -217,7 +217,7 @@
       "y": 230,
       "width": 210,
       "height": 120,
-      "text": "Document Intelligence\nOCR -> Markdown\nPhysical page spans",
+      "text": "Content Understanding\nOCR + visual analysis\nPhysical page spans",
       "fontSize": 17,
       "fontFamily": 2,
       "strokeColor": "#000000",
@@ -243,7 +243,7 @@
       "updated": 1790908024115,
       "link": null,
       "locked": false,
-      "originalText": "Document Intelligence\nOCR -> Markdown\nPhysical page spans",
+      "originalText": "Content Understanding\nOCR + visual analysis\nPhysical page spans",
       "autoResize": true,
       "lineHeight": 2.3529411764705883
     },

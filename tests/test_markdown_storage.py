@@ -255,8 +255,8 @@ def test_multiple_spans_preserve_unicode_and_structural_markup():
 
 async def test_missing_markdown_response_fails_before_publishing(settings):
     _, source, pages, di, search = ingestion_clients()
-    result = await di.begin_analyze_document.return_value.result()
-    result.content_format = "text"
+    result = await di.begin_analyze.return_value.result()
+    result.contents[0].markdown = None
     with pytest.raises(ValueError, match="must return Markdown"):
         await ingest_pdf("a.pdf", settings, source, pages, di, search)
     pages.upload_blob.assert_not_called()
@@ -290,6 +290,10 @@ async def test_ingested_artifacts_are_readable_by_investigation(settings):
     doc_id = chunks[0].document_id
     await state.open_pages(doc_id, 1, 1)
     assert next(iter(state.evidence.values())).text == "# Policy\n\n"
+    assert (
+        next(iter(state.evidence.values())).content_origin
+        == "mixed_extraction_and_generated_visuals"
+    )
     result = json.loads(await state.search_document(doc_id, "floods"))
     assert result["matching_pages"] == [{"page_number": 2, "matched_terms": 1}]
     await state.open_pages(doc_id, 2, 2)

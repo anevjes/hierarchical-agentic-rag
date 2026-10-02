@@ -4,7 +4,7 @@ import re
 from typing import NoReturn
 
 from .config import Settings
-from .models import Answer, Assessment, Chunk, Evidence, Page, StoredDocument
+from .models import Answer, Assessment, Chunk, DocumentManifest, Evidence, Page, StoredDocument
 from .retrieval import EvidenceBackend, validate_provenance
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,11 @@ class Investigation:
                 source_url=f"{doc.source_url}#page={page.number}",
                 source_etag=doc.source_etag,
                 text=page.text,
+                content_origin=(
+                    "mixed_extraction_and_generated_visuals"
+                    if isinstance(doc, DocumentManifest) and doc.extraction is not None
+                    else "extracted_text"
+                ),
             )
         return json.dumps(
             {

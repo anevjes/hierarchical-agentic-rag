@@ -41,6 +41,14 @@ class PageReference(Record):
     spans: list[ContentSpan]
 
 
+class ExtractionMetadata(Record):
+    provider: Literal["azure_content_understanding"] = "azure_content_understanding"
+    analyzer_id: str
+    api_version: str
+    analysis_blob: str
+    analysis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class DocumentManifest(DocumentIdentity):
     schema_version: Literal[2] = 2
     content_format: Literal["markdown"] = "markdown"
@@ -49,6 +57,7 @@ class DocumentManifest(DocumentIdentity):
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     content_chars: int = Field(ge=0)
     pages: list[PageReference]
+    extraction: ExtractionMetadata | None = None
 
 
 StoredDocument = Document | DocumentManifest
@@ -78,6 +87,9 @@ class Evidence(Record):
     source_url: str
     source_etag: str
     text: str
+    content_origin: Literal[
+        "extracted_text", "mixed_extraction_and_generated_visuals"
+    ] = "extracted_text"
 
 
 class Assessment(Record):

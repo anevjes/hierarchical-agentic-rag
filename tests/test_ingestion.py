@@ -1,8 +1,10 @@
+import hashlib
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from azure.ai.documentintelligence.models import AnalyzeResult
+from azure.ai.contentunderstanding.models import AnalysisResult
 from azure.core import MatchConditions
 from azure.core.exceptions import ResourceModifiedError
 
@@ -16,20 +18,35 @@ async def empty_results():
         yield {}
 
 
-def ingestion_clients(text="First page. Second page.", split=12):
-    result = AnalyzeResult(
+def analysis_result(text="First page. Second page.", split=12):
+    return AnalysisResult(
         {
-            "apiVersion": "2024-11-30",
-            "modelId": "prebuilt-layout",
-            "stringIndexType": "unicodeCodePoint",
-            "contentFormat": "markdown",
-            "content": text,
-            "pages": [
-                {"pageNumber": 1, "spans": [{"offset": 0, "length": split}]},
-                {"pageNumber": 2, "spans": [{"offset": split, "length": len(text) - split}]},
+            "apiVersion": "2025-11-01",
+            "analyzerId": "prebuilt-documentSearch",
+            "stringEncoding": "codePoint",
+            "warnings": [],
+            "contents": [
+                {
+                    "kind": "document",
+                    "mimeType": "application/pdf",
+                    "startPageNumber": 1,
+                    "endPageNumber": 2,
+                    "markdown": text,
+                    "pages": [
+                        {"pageNumber": 1, "spans": [{"offset": 0, "length": split}]},
+                        {
+                            "pageNumber": 2,
+                            "spans": [{"offset": split, "length": len(text) - split}],
+                        },
+                    ],
+                }
             ],
         }
     )
+
+
+def ingestion_clients(text="First page. Second page.", split=12):
+    result = analysis_result(text, split)
     blob = Mock(
         get_blob_properties=AsyncMock(
             return_value=SimpleNamespace(size=30, etag='"v1"'),
@@ -38,8 +55,8 @@ def ingestion_clients(text="First page. Second page.", split=12):
     )
     source = Mock(get_blob_client=Mock(return_value=blob))
     pages = Mock(upload_blob=AsyncMock())
-    di = Mock(
-        begin_analyze_document=AsyncMock(
+    cu = Mock(
+        begin_analyze=AsyncMock(
             return_value=Mock(result=AsyncMock(return_value=result)),
         )
     )
@@ -48,7 +65,7 @@ def ingestion_clients(text="First page. Second page.", split=12):
         search=AsyncMock(return_value=empty_results()),
         delete_documents=AsyncMock(),
     )
-    return blob, source, pages, di, search
+    return blob, source, pages, cu, search
 
 
 def test_page_bounded_chunking_and_overlap(document):
@@ -74,12 +91,12 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     blob, source, pages, di, search = ingestion_clients(text, split)
     count = await ingest_pdf("a.pdf", settings, source, pages, di, search)
     assert count == 2
-    kwargs = di.begin_analyze_document.call_args.kwargs
-    assert kwargs["string_index_type"] == "unicodeCodePoint"
-    assert kwargs["output_content_format"] == "markdown"
-    assert kwargs["body"].getvalue().startswith(b"%PDF-")
+    kwargs = di.begin_analyze.call_args.kwargs
+    assert kwargs["processing_location"] == "geography"
+    assert kwargs["inputs"][0].data.startswith(b"%PDF-")
+    assert kwargs["inputs"][0].mime_type == "application/pdf"
     writes = [call.kwargs for call in pages.upload_blob.call_args_list]
-    assert len(writes) == 4
+    assert len(writes) == 5
     manifest = DocumentManifest.model_validate_json(writes[-1]["data"])
     assert "text" not in manifest.pages[0].model_dump()
     assert manifest.pages[1].spans[0].offset == split
@@ -91,8 +108,12 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     assert all(write["overwrite"] is False for write in writes)
     assert all(
         write["content_settings"].content_type == "text/markdown; charset=utf-8"
-        for write in writes[:-1]
+        for write in writes[:3]
     )
+    assert manifest.extraction.provider == "azure_content_understanding"
+    assert manifest.extraction.analysis_blob == writes[3]["name"]
+    assert hashlib.sha256(writes[3]["data"]).hexdigest() == manifest.extraction.analysis_sha256
+    assert json.loads(writes[3]["data"])["stringEncoding"] == "codePoint"
     assert blob.get_blob_properties.call_count == 2
     assert blob.download_blob.call_args.kwargs["match_condition"] == MatchConditions.IfNotModified
     uploaded = search.upload_documents.call_args.kwargs["documents"]
@@ -128,7 +149,7 @@ async def test_oversized_pdf_rejected_before_download(settings):
     with pytest.raises(ValueError, match="max_pdf_bytes"):
         await ingest_pdf("a.pdf", settings, source, pages, di, search)
     blob.download_blob.assert_not_called()
-    di.begin_analyze_document.assert_not_called()
+    di.begin_analyze.assert_not_called()
 
 
 async def test_source_and_manifest_provenance(settings, document, hit):

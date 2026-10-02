@@ -49,7 +49,7 @@ Create/configure these through your normal approved infrastructure process:
 |---|---|
 | Azure Storage | Private source PDF container; separate derived-page container |
 | Azure AI Search | Region/tier supporting knowledge bases and semantic ranking; semantic ranker enabled; Entra data-plane authentication enabled |
-| Document Intelligence | `prebuilt-layout` with API `2024-11-30`, PDF/OCR and Markdown output support |
+| Content Understanding | Foundry resource endpoint in a supported region; `prebuilt-documentSearch` with API `2025-11-01`; resolvable completion/embedding model deployments |
 | Microsoft Foundry | Project endpoint and a deployed Responses-compatible model with function calling and structured outputs |
 
 GPT-4.1 is a reasonable initial model choice. The setting is a **deployment name**,
@@ -61,6 +61,51 @@ sign-in locally and can use managed identity in Azure. No API keys, connection
 strings, storage account keys, or SAS tokens are required. For production,
 constrain the credential chain/environment so the intended managed identity is
 selected; do not leave unintended developer credentials on the host.
+
+### Content Understanding configuration
+
+Install updated dependencies with `python -m pip install -e ".[dev]"`.
+Replace `HRAG_DOCUMENT_INTELLIGENCE_ENDPOINT` with
+`HRAG_CONTENT_UNDERSTANDING_ENDPOINT=https://YOUR-FOUNDRY.services.ai.azure.com`.
+This is the **resource endpoint**, not the project endpoint or the old
+Document Intelligence `cognitiveservices.azure.com` endpoint.
+
+The default analyzer is `prebuilt-documentSearch`. Its verified configuration
+enables OCR, layout, figure descriptions and figure analysis, and returns detailed
+physical pages. Descriptions appear in Markdown image titles; supported chart
+analysis appears as chart data, and diagram analysis as Mermaid. The application
+indexes page-bounded windows of that enriched Markdown, not the document summary
+or service-generated cross-page chunks. No embedding field is added to Search.
+
+Model requirements belong to CU, independently of `HRAG_MODEL_DEPLOYMENT`, which
+still selects the MAF query model. Use `ContentUnderstandingClient.get_analyzer()`
+and `get_defaults()` to inspect current model keys and mappings. The analyzer
+definition can evolve even under a pinned API version. If resource defaults do
+not resolve its models, set **request-scoped** mappings in `.env`, for example:
+
+```dotenv
+HRAG_CONTENT_UNDERSTANDING_ANALYZER=prebuilt-documentSearch
+HRAG_CONTENT_UNDERSTANDING_MODEL_DEPLOYMENTS={"prebuilt-analyzer-completion-mini":"gpt-5","prebuilt-analyzer-embedding":"text-embedding-3-large"}
+HRAG_CONTENT_UNDERSTANDING_PROCESSING_LOCATION=geography
+```
+
+Use keys reported by your analyzer and actual supported deployment names, not
+model names guessed from the agent deployment. The example above was live-tested
+on a synthetic PDF against the configured resource with its existing deployments.
+The unmodified resource defaults failed with "no completion model deployment ...
+resolved"; request-scoped mappings fixed this without changing shared defaults.
+A further live two-page synthetic bar-chart test returned a figure description
+and structured chart data on page 1, with limitations text on page 2; the
+application's span validation and page slicing passed. These are SDK/ingestion
+smoke tests, not scientific visual-accuracy or end-to-end RAG tests.
+
+An empty mapping uses resource defaults. The application never deploys models or
+patches shared defaults. Default processing is restricted to `geography`;
+`dataZone` or `global` must be explicitly configured if required and approved.
+Custom analyzers must return one unsegmented document with full Markdown,
+physical page spans and figure descriptions/analysis enabled. Multiple content
+items, service warnings, invalid spans or unmapped figures fail before publishing,
+rather than silently dropping content or falling back to OCR-only extraction.
 
 ## Least-privilege role assignments
 
@@ -75,10 +120,10 @@ provisioner, ingester, and query service can be separate identities.
 | Read original PDFs | Storage Blob Data Reader on source container |
 | Write extracted pages / create derived container | Storage Blob Data Contributor on derived container (account scope if it must create the container) |
 | Query extracted pages | Storage Blob Data Reader on derived container |
-| Run Document Intelligence | Cognitive Services User on DI resource |
+| Run Content Understanding | Cognitive Services User on Foundry resource |
 | Call Foundry deployed model | Azure AI User on Foundry project (and any model inference role required by your resource configuration) |
 
-Search does not call Blob, Document Intelligence, or a model in this design.
+Search does not call Blob, Content Understanding, or a generative model in this design.
 The Python application does. Therefore there is no Search managed-identity Blob
 indexer role or Search-to-model synthesis role to configure for this baseline.
 
@@ -100,7 +145,7 @@ Do not point this sample at an unrelated production index. Schema changes that
 Search cannot apply in place should use a new index/source/base name and a
 controlled migration; this tool never deletes and recreates an index silently.
 
-Ingest files after putting them in Blob Storage. OCR runs once per ingestion, not
+Ingest files after putting them in Blob Storage. CU analysis runs once per ingestion, not
 once per query. Re-ingestion produces a new extraction revision even for an
 unchanged PDF, and removes older chunks only after new uploads succeed.
 
@@ -117,6 +162,7 @@ configured `HRAG_PAGES_CONTAINER` (default `document-pages`):
 ```text
 <document-id>/<revision>.json
 <document-id>/<revision>/document.md
+<document-id>/<revision>/analysis.json
 <document-id>/<revision>/pages/0001.md
 <document-id>/<revision>/pages/0002.md
 ...
@@ -125,12 +171,20 @@ configured `HRAG_PAGES_CONTAINER` (default `document-pages`):
 The JSON holds provenance, physical-page spans, canonical blob names, character
 lengths, and SHA-256 hashes, not the page text itself. Markdown blobs use
 `text/markdown; charset=utf-8`. The full-document file retains the original
-Document Intelligence Markdown, including structural markup and page comments.
+Content Understanding Markdown, including generated figure descriptions/analysis,
+structural markup and page comments.
 Individual page files are derived from the service's physical-page spans.
+`analysis.json` preserves the raw result (including figures, descriptions, source
+geometry and summary fields) for audit, not for query-time downloads. The optional
+manifest `extraction` block records provider, analyzer, API version, raw-result
+blob path and SHA-256. Page/full Markdown hashes are verified on query reads;
+the raw-result hash is available for separate audit verification.
 
 **Existing documents:** schema-v1 inline-page JSON remains readable and emits a
 warning suggesting re-ingestion. It does not get silently converted to Markdown
-at query time. Upgrade through normal ingestion:
+at query time. Existing schema-v2 DI Markdown also remains readable; it will not
+gain visual descriptions without re-analysis. Upgrade through normal ingestion
+after installing dependencies and configuring CU:
 
 ```powershell
 hrag ingest --blob "policies/claims.pdf"
@@ -138,10 +192,10 @@ hrag ingest --blob "policies/claims.pdf"
 hrag ingest
 ```
 
-No new dependencies, Azure resources, environment settings, role assignments,
-or Search schema changes are required. A new extraction revision is published;
+No Search schema changes or IQ reprovisioning are required. CU dependencies,
+endpoint, RBAC and model mappings must be ready first. A new extraction revision is published;
 old indexed chunks are removed only after the new upload succeeds. Re-ingestion
-incurs Document Intelligence costs. Retain or clean up old artifact revisions
+incurs Content Understanding and underlying model costs. Retain or clean up old artifact revisions
 according to your retention policy.
 
 Avoid lifecycle rules that independently expire page Markdown while retaining
@@ -170,8 +224,10 @@ after checking active index revisions and ongoing investigations.
    to synthesize if required pages cannot be read.
 8. Replace a PDF without re-ingesting. Page expansion must fail on the ETag check.
    Re-ingest and retry.
-9. Manually verify every exact quote against the source PDF, including physical
-   page numbering. Browser `#page` links may require an authenticated viewer.
+9. Compare extracted text and visual interpretations against the source PDF,
+   including physical page numbering. Exact quote checks verify Markdown, not
+   whether generated words or numbers were printed in the PDF. Browser `#page`
+   links may require an authenticated viewer.
 10. Use Storage diagnostics to verify a fresh `open_pages` reads only the manifest
     and requested pages, not the full-document Markdown. A first whole-document
     search can download the full Markdown; repeated searches and page opens in
@@ -179,19 +235,27 @@ after checking active index revisions and ongoing investigations.
 11. In a disposable test revision, modify or remove a page Markdown blob.
     Page opening must fail its hash check or return a missing-blob error.
     Re-ingest to publish a new consistent revision.
+12. Ingest a representative visual PDF. Compare figure descriptions, axes, units,
+    legends, arrows, direction and depth with its source pages. Inspect both
+    `analysis.json` and page Markdown; confirm visual terms enter indexed chunks.
+    Ask a question about a figure and check `content_origin` in opened evidence.
+    Generated interpretations must be qualified; missing quantitative evidence
+    must produce a gap, not invented measurements. A screenshot alone is not a
+    test of multi-page PDF extraction.
 
 Run these domain-specific checks on model/dependency changes. Offline tests
 cannot prove model sufficiency judgments, OCR accuracy, or retrieval recall.
 
 ## Costs and scale
 
-Expect charges for Document Intelligence pages, Search/semantic retrieval,
-Storage operations, and model calls/tokens. Ingestion page limits are checked
-after extraction, so Document Intelligence can already have incurred cost for an
+Expect charges for Content Understanding extraction/analysis and its underlying
+model calls, Search/semantic retrieval, Storage operations, and MAF model calls.
+Ingestion page limits are checked
+after extraction, so Content Understanding can already have incurred cost for an
 over-limit file. The byte cap is enforced before download/extraction.
 
 For a P-page PDF, ingestion writes P page blobs, one full-document Markdown blob,
-and one manifest: **P + 2 writes**, plus Search operations. Storage holds both
+one raw analysis JSON and one manifest: **P + 3 writes**, plus Search operations. Storage holds both
 the full Markdown and the page slices, trading some duplication for efficient
 page reads and efficient whole-document search.
 

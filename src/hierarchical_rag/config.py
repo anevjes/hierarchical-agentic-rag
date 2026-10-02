@@ -1,3 +1,4 @@
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
@@ -14,7 +15,12 @@ class Settings(BaseSettings):
     index_name: str = "page-chunks"
     knowledge_source_name: str = "page-chunks-source"
     knowledge_base_name: str = "document-investigation"
-    document_intelligence_endpoint: str
+    content_understanding_endpoint: str
+    content_understanding_analyzer: str = "prebuilt-documentSearch"
+    content_understanding_model_deployments: dict[str, str] = Field(default_factory=dict)
+    content_understanding_processing_location: Literal["geography", "dataZone", "global"] = (
+        "geography"
+    )
     foundry_project_endpoint: str
     model_deployment: str
     chunk_chars: int = Field(default=2400, ge=200, le=12000)
@@ -31,7 +37,7 @@ class Settings(BaseSettings):
     @field_validator(
         "storage_account_url",
         "search_endpoint",
-        "document_intelligence_endpoint",
+        "content_understanding_endpoint",
         "foundry_project_endpoint",
     )
     @classmethod
@@ -43,11 +49,18 @@ class Settings(BaseSettings):
             raise ValueError("Endpoint credentials are not supported")
         return value.rstrip("/")
 
-    @field_validator("model_deployment")
+    @field_validator("model_deployment", "content_understanding_analyzer")
     @classmethod
     def nonempty(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("A model deployment name is required")
+        return value
+
+    @field_validator("content_understanding_model_deployments")
+    @classmethod
+    def valid_model_mapping(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not key.strip() or not deployment.strip() for key, deployment in value.items()):
+            raise ValueError("Content Understanding model mappings must not contain empty names")
         return value
 
     @model_validator(mode="after")

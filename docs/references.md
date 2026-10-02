@@ -9,9 +9,10 @@ Checked against published SDKs and Microsoft documentation during implementation
 - [Create a knowledge base](https://learn.microsoft.com/azure/search/agentic-retrieval-how-to-create-knowledge-base)
 - [Retrieve from a knowledge base](https://learn.microsoft.com/azure/search/agentic-retrieval-how-to-retrieve)
 - [Search SDK](https://learn.microsoft.com/python/api/overview/azure/search-documents-readme)
-- [Document Intelligence Python SDK](https://learn.microsoft.com/python/api/overview/azure/ai-documentintelligence-readme)
-- [Document Intelligence Markdown elements](https://learn.microsoft.com/azure/ai-services/document-intelligence/concept/markdown-elements?view=doc-intel-4.0.0)
-- [Document Intelligence layout and page spans](https://learn.microsoft.com/azure/ai-services/document-intelligence/prebuilt/layout?view=doc-intel-4.0.0)
+- [Content Understanding Python SDK](https://learn.microsoft.com/python/api/overview/azure/ai-contentunderstanding-readme)
+- [Content Understanding prebuilt analyzers](https://learn.microsoft.com/azure/ai-services/content-understanding/concepts/prebuilt-analyzers)
+- [Content Understanding Markdown and generated figure descriptions](https://learn.microsoft.com/azure/ai-services/content-understanding/document/markdown)
+- [Content Understanding elements and physical-page spans](https://learn.microsoft.com/azure/ai-services/content-understanding/document/elements)
 - [MAF Foundry model provider](https://learn.microsoft.com/agent-framework/integrations/by-component/model-providers/microsoft-foundry)
 - [MAF function tools and invocation limits](https://learn.microsoft.com/agent-framework/agents/tools/function-tools)
 - [MAF structured outputs](https://learn.microsoft.com/agent-framework/agents/structured-outputs)
@@ -29,12 +30,21 @@ Important version distinctions:
 - The investigator uses the framework's function-invocation loop, serial tool
   execution, and structured `Assessment` output. It is not a hand-written LLM
   function-call parser.
-- Document Intelligence `1.0.2` / API `2024-11-30` accepts
-  `output_content_format="markdown"` and `string_index_type="unicodeCodePoint"`.
-  Physical pages use `AnalyzeResult.pages[*].spans` over its Markdown `content`;
-  HTML tables and page-break comments are retained, not parsed as pagination.
+- Content Understanding `1.1.0` / API `2025-11-01` uses
+  `begin_analyze(inputs=[AnalysisInput(data=pdf_bytes, mime_type="application/pdf")])`.
+  Its Python SDK automatically requests `stringEncoding=codePoint`.
+  Physical pages use `AnalysisResult.contents[0].pages[*].spans` over that
+  content item's `markdown`; HTML tables and page comments are retained.
+  `prebuilt-documentSearch` enables both `enableFigureDescription` and
+  `enableFigureAnalysis`. The returned Markdown includes those generated
+  representations, so they enter our existing page-bounded chunker.
+- The live analyzer definition and synthetic-PDF call verified request-scoped
+  `model_deployments` mappings for `prebuilt-analyzer-completion-mini` and
+  `prebuilt-analyzer-embedding`. Consult your actual analyzer definition rather
+  than assuming older documentation's model keys match the live service.
 - Derived storage schema v2 uses a JSON manifest, per-page Markdown, and
   full-document Markdown, with canonical paths and SHA-256 integrity checks.
-  The reader continues to support schema-v1 inline-page JSON.
+  CU adds raw `analysis.json` and optional manifest extraction provenance.
+  The reader continues to support schema-v1 inline-page JSON and older DI v2 manifests.
 - The SDK package versions and wire shapes are validated offline, while live
   service behavior still requires the smoke tests in [setup](setup.md).

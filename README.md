@@ -2,7 +2,7 @@
 
 A PDF-first Python accelerator using **Microsoft Agent Framework (MAF)**,
 **Foundry IQ / Azure AI Search knowledge bases**, Azure Blob Storage, and Azure
-Document Intelligence. All Azure clients use `DefaultAzureCredential`.
+Content Understanding. All Azure clients use `DefaultAzureCredential`.
 
 **Retrieve chunks to find documents. Open the actual referenced pages to gather
 evidence. Investigate missing context before allowing answer generation.**
@@ -13,8 +13,8 @@ Foundry-hosted agent. No Azure resources are created simply by installing or tes
 ## What it does
 
 1. Reads PDFs from a private Blob container.
-2. Uses Document Intelligence `prebuilt-layout` with Markdown output for digital
-   PDFs and scanned-page OCR.
+2. Uses Content Understanding `prebuilt-documentSearch` for PDF OCR/layout plus
+   generated figure descriptions and chart/diagram analysis in Markdown.
 3. Persists per-page Markdown, the full-document Markdown, and a versioned JSON
    manifest in a separate private Blob container. Page opens download only the
    requested pages; document searches load the full Markdown once per investigation.
@@ -28,19 +28,21 @@ Foundry-hosted agent. No Azure resources are created simply by installing or tes
    locates non-adjacent passages, and searches other documents when needed.
 8. Separates the investigator's structured sufficiency assessment from a final,
    tool-free answer writer. Only approved, opened pages reach the writer. Citation
-   IDs and exact supporting quotes are validated in code.
+   IDs and exact extracted-Markdown quotes are validated in code. Visual
+   interpretations are flagged as potentially generated, not verbatim source facts.
 
 The stable Search API `2026-04-01` supports minimal extractive retrieval, without
 knowledge-base LLM query planning or answer synthesis. MAF does the iterative
 planning here. Retrieval uses **keyword search plus semantic ranking**, not vector
-search. No embedding deployment is required.
+search. Search does not use embeddings; the Content Understanding analyzer has
+its own completion/embedding deployment requirements (see setup).
 
 ### Why not the automatic Blob knowledge source?
 
 Foundry IQ supports a native Blob knowledge source that creates its own indexer,
 skillset, and index. This accelerator deliberately uses the documented
 **existing-index knowledge-source** path to own a strict chunk-to-physical-page
-contract and full-page OCR cache. Blob remains the original source. We do not
+contract and full-page extraction cache. Blob remains the original source. We do not
 pretend that Text Split "pages" are physical PDF pages, or that every native
 ingestion configuration guarantees the metadata this tool needs.
 
@@ -53,7 +55,8 @@ document-pages/
   <document-id>/
     <revision>.json              # metadata, physical-page spans, paths, SHA-256 hashes
     <revision>/
-      document.md               # full Document Intelligence Markdown
+      document.md               # full Content Understanding Markdown
+      analysis.json             # raw CU result, figures, geometry and provenance
       pages/
         0001.md                 # physical PDF page 1
         0002.md                 # physical PDF page 2
@@ -65,13 +68,23 @@ uses the manifest's Unicode spans to recover physical pages. Subsequent page
 opens reuse that cache. Neither phase downloads or re-extracts the original PDF;
 the source ETag is checked when loading its manifest.
 
-Existing inline-page JSON revisions remain readable. **Re-run ingestion to
-upgrade existing documents to Markdown storage**; no Search schema change or
-resource reprovisioning is needed. See [storage and migration](docs/setup.md#markdown-storage-and-migration).
+Existing inline-page JSON and Document Intelligence Markdown revisions remain
+readable. **Re-run ingestion to add Content Understanding visual analysis** after
+updating dependencies and CU configuration; no Search schema change is needed.
+See [storage and migration](docs/setup.md#markdown-storage-and-migration).
+
+### Visual-rich PDFs
+
+Figure descriptions make labels, legends and depicted relationships searchable,
+including in scientific cross-sections and maps. This is not guaranteed scientific
+chart digitisation: colour-scale values, depth estimates and geological conclusions
+need validation against the PDF. The agent reads cached enriched Markdown, not
+rendered pixels, and is instructed to report missing/ambiguous visual context.
+Raw figure assets are not downloaded; their descriptions/analysis are retained.
 
 ## Quick start (PowerShell)
 
-Requires Python 3.11+; local validation was performed with Python 3.13.
+Requires Python 3.11+; the CU migration was locally validated with Python 3.14.
 
 The environment-creation command below is for a **new** virtual environment.
 Do not run it over an existing environment with a different Python version:
@@ -96,7 +109,7 @@ Put PDFs into the source container with your normal Azure upload tooling first.
 
 `provision` creates/updates the Search index, knowledge source, and knowledge base.
 It does **not** provision an Azure subscription, Search service, Storage account,
-Foundry project/model, or Document Intelligence resource. It also checks that the
+Foundry project/model, or Content Understanding configuration. It also checks that the
 source container exists and creates the derived-page container if absent.
 Use dedicated names: `provision` updates objects with those names.
 

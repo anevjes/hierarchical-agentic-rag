@@ -2,7 +2,7 @@
 
 ## Data plane
 
-`Blob PDF -> Document Intelligence Markdown -> page/full Markdown blobs + JSON
+`Blob PDF -> Content Understanding visual-enriched Markdown -> page/full Markdown blobs + JSON
 manifest + Search chunks -> knowledge source -> knowledge base`
 
 The knowledge base and knowledge source are real Azure AI Search data-plane
@@ -14,13 +14,16 @@ automatically create that project connection.
 
 Each extraction gets a new revision. The original Blob ETag is checked before
 download and again before publishing. Each chunk stays inside one physical page.
-Ingestion requests `output_content_format="markdown"` and
-`string_index_type="unicodeCodePoint"`. The service must report those formats in
-its result; otherwise ingestion fails explicitly. Each physical page's Markdown
-comes from that page's Document Intelligence `spans`, not from splitting on
+Ingestion uses the CU async SDK with `prebuilt-documentSearch`, inline PDF bytes,
+request-scoped model mappings and API `2025-11-01`. The SDK automatically requests
+`stringEncoding=codePoint`. The result must report this encoding and supply
+Markdown; otherwise ingestion fails explicitly. Each physical page's Markdown
+comes from `DocumentContent.pages[*].spans` over `DocumentContent.markdown`, not splitting on
 headings, printed page numbers, or literal `<!-- PageBreak -->` comments.
 Unicode code-point offsets match Python string indexing, including emoji.
-Out-of-range, overlapping, or out-of-order spans within a page are rejected.
+Out-of-range, overlapping, or out-of-order spans are rejected. A single
+unsegmented document with contiguous pages is required. Service warnings and
+figures without spans contained in a physical page are errors, not partial success.
 
 ### Versioned Markdown artifacts
 
@@ -29,10 +32,13 @@ All artifacts live in the private derived container:
 | Artifact | Content |
 |---|---|
 | `<document-id>/<revision>.json` | Schema-v2 manifest: source identity/ETag, full-Markdown path/hash/length, and each physical page's path/hash/length/spans |
-| `<document-id>/<revision>/document.md` | Complete, unmodified Document Intelligence Markdown |
+| `<document-id>/<revision>/document.md` | Complete, unmodified Content Understanding Markdown |
+| `<document-id>/<revision>/analysis.json` | Raw CU result, including figures, source geometry and fields; audit only |
 | `<document-id>/<revision>/pages/0001.md` | Page 1's Markdown; analogous files for every page, including blank pages |
 
-The manifest contains **no inline page text**. Markdown blobs are uploaded first,
+The manifest contains **no inline page text**. Its optional `extraction` block
+identifies CU, the analyzer/API version and raw-analysis path/hash. Older DI
+manifests do not have this block and remain valid. Markdown and raw analysis are uploaded first,
 then the manifest, then the Search chunks. A failed Markdown upload cannot publish
 a new manifest/index revision. Incomplete uploads can leave orphaned blobs and
 require operational cleanup; this is not a cross-service transaction.
@@ -61,14 +67,25 @@ validating identity and physical pagination. Then:
 - A missing or corrupt blob fails explicitly; the reader does not silently fall
   back to PDF OCR, an empty page, or a different revision.
 
-This is stored OCR/layout Markdown, not rendered PDF pixels, and neither tool
-re-extracts the PDF. MAF sees headings, paragraphs, and table markup as data.
-Document Intelligence can emit **HTML tables inside Markdown**. Page-local slices
+This is stored OCR/layout plus generated visual-analysis Markdown, not rendered
+PDF pixels, and neither tool re-extracts the PDF. MAF sees headings, paragraphs,
+tables, figure descriptions, chart data and Mermaid diagrams as data.
+Content Understanding can emit **HTML tables inside Markdown**. Page-local slices
 can be fragments of structures spanning pages, rather than independently
 renderable Markdown/HTML. The full-document artifact preserves the complete
 service output; adjacent page expansion provides surrounding evidence.
 Image/figure references may be present, but this accelerator does not download
 their image assets or follow embedded links.
+
+CU evidence is conservatively tagged
+`content_origin=mixed_extraction_and_generated_visuals`, even when a page has no
+detected figure. This is page-level provenance, not a claim that every generated
+token can be distinguished from OCR. Both agents are instructed to treat visual
+descriptions/derived chart data as interpretations, to check axes/units/legends,
+and to leave gaps when essential visual context is absent. Exact quote validation
+checks the stored Markdown only; it cannot establish that generated descriptions
+or values appeared in the original PDF. Raw analysis is retained for audit but
+never fetched during page expansion.
 
 Caches are scoped to one investigation, not shared across callers. A source can
 change after its ETag check; the evidence records a versioned snapshot, not a
@@ -79,7 +96,7 @@ transactional lock over the original Blob.
 Schema-v1 inline-page JSON is still supported, with an explicit migration warning.
 It necessarily loads all page text on first access and needs no additional
 Markdown reads. New ingestion always writes schema v2. Re-ingesting an existing
-PDF produces the Markdown artifacts and replaces its old indexed chunks, without
+PDF produces the CU Markdown/analysis artifacts and replaces its old indexed chunks, without
 changing the Search schema. Old revisions are not rewritten in place.
 
 PDF links use `#page=N`, where N is the **1-based physical PDF page**, not the
@@ -140,8 +157,10 @@ Duplicate queries/pages do not return their text again or count twice as evidenc
 ## Known limitations / extension points
 
 - PDFs only. Word, HTML, and slide navigation need separate location contracts.
-- OCR/layout Markdown only; graphs, images, complex visual tables, handwriting,
-  and reading order may require multimodal page rendering or human review.
+- CU can describe figures and analyze supported charts/diagrams, but arbitrary
+  scientific cross-sections, maps and colour scales are not guaranteed to yield
+  accurate quantitative data. Human/domain review or a separate rendered-page
+  vision tool may still be required. The current tools return text, not pixels.
 - No automatic access-control propagation. Application RBAC is not end-user ACL
   trimming. Add caller-scoped filtering before returning hits **and** enforce the
   same policy when reading source/page blobs.

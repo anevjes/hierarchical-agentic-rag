@@ -10,7 +10,7 @@ def settings():
     return Settings(
         storage_account_url="https://example.blob.core.windows.net",
         search_endpoint="https://example.search.windows.net",
-        document_intelligence_endpoint="https://example.cognitiveservices.azure.com",
+        content_understanding_endpoint="https://example.services.ai.azure.com",
         foundry_project_endpoint="https://example.services.ai.azure.com/api/projects/demo",
         model_deployment="test-model",
         _env_file=None,

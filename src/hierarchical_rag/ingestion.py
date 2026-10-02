@@ -1,20 +1,30 @@
 import hashlib
+import json
 import logging
 from collections.abc import Iterable
-from io import BytesIO
 from urllib.parse import quote
 from uuid import uuid4
 
-from azure.ai.documentintelligence.aio import DocumentIntelligenceClient
+from azure.ai.contentunderstanding.aio import ContentUnderstandingClient
+from azure.ai.contentunderstanding.models import AnalysisInput, AnalysisResult, DocumentContent
 from azure.core import MatchConditions
 from azure.search.documents.aio import SearchClient
 from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import ContainerClient
 
 from .config import Settings
-from .models import Chunk, ContentSpan, Document, DocumentManifest, Page, PageReference
+from .models import (
+    Chunk,
+    ContentSpan,
+    Document,
+    DocumentManifest,
+    ExtractionMetadata,
+    Page,
+    PageReference,
+)
 
 logger = logging.getLogger(__name__)
+CONTENT_UNDERSTANDING_API_VERSION = "2025-11-01"
 
 
 def source_url(settings: Settings, blob_name: str) -> str:
@@ -105,12 +115,68 @@ def odata_literal(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
+def extract_pages(
+    result: AnalysisResult, settings: Settings
+) -> tuple[str, list[Page], list[list[ContentSpan]]]:
+    if result.warnings:
+        raise ValueError(f"Content Understanding returned warnings: {result.warnings}")
+    if result.analyzer_id != settings.content_understanding_analyzer:
+        raise ValueError("Content Understanding returned an unexpected analyzer")
+    if result.api_version != CONTENT_UNDERSTANDING_API_VERSION:
+        raise ValueError("Content Understanding returned an unexpected API version")
+    if result.string_encoding != "codePoint":
+        raise ValueError("Content Understanding must return Unicode code-point spans")
+    # One input PDF with no segmentation; never silently discard other content items.
+    if len(result.contents) != 1 or not isinstance(result.contents[0], DocumentContent):
+        raise ValueError("Expected exactly one Content Understanding document result")
+    content = result.contents[0]
+    if content.markdown is None:
+        raise ValueError("Content Understanding must return Markdown")
+    if not content.pages or len(content.pages) > settings.max_document_pages:
+        raise ValueError("Document has no pages or exceeds max_document_pages")
+    numbers = [page.page_number for page in content.pages]
+    if (
+        numbers != list(range(1, len(numbers) + 1))
+        or content.start_page_number != 1
+        or content.end_page_number != len(numbers)
+    ):
+        raise ValueError("Content Understanding returned non-contiguous physical pages")
+    extracted = []
+    page_spans = []
+    previous_end = 0
+    for page in content.pages:
+        spans = [
+            ContentSpan(offset=span.offset, length=span.length) for span in page.spans or []
+        ]
+        if not spans and (page.words or page.lines):
+            raise ValueError("Nonblank Content Understanding page has no Markdown spans")
+        for span in spans:
+            if span.offset < previous_end:
+                raise ValueError("Content Understanding page spans overlap or are out of order")
+            previous_end = span.offset + span.length
+        extracted.append(Page(number=page.page_number, text=span_text(content.markdown, spans)))
+        page_spans.append(spans)
+    # Figure descriptions/analysis must be in the page text we index, not only in raw JSON.
+    for figure in content.figures or []:
+        figure_span = figure.span
+        if figure_span is None or figure_span.length <= 0 or not any(
+            page_span.offset <= figure_span.offset
+            and figure_span.offset + figure_span.length <= page_span.offset + page_span.length
+            for spans in page_spans
+            for page_span in spans
+        ):
+            raise ValueError("Content Understanding figure is not contained in a physical page")
+    if not any(page.text.strip() for page in extracted):
+        raise ValueError("Content Understanding extracted no searchable content")
+    return content.markdown, extracted, page_spans
+
+
 async def ingest_pdf(
     blob_name: str,
     settings: Settings,
     source: ContainerClient,
     pages: ContainerClient,
-    intelligence: DocumentIntelligenceClient,
+    intelligence: ContentUnderstandingClient,
     search: SearchClient,
 ) -> int:
     if not blob_name.lower().endswith(".pdf"):
@@ -126,31 +192,14 @@ async def ingest_pdf(
     data = await download.readall()
     if b"%PDF-" not in data[:1024]:
         raise ValueError(f"Blob is not a PDF: {blob_name}")
-    poller = await intelligence.begin_analyze_document(
-        "prebuilt-layout",
-        body=BytesIO(data),
-        content_type="application/pdf",
-        string_index_type="unicodeCodePoint",
-        output_content_format="markdown",
+    poller = await intelligence.begin_analyze(
+        settings.content_understanding_analyzer,
+        inputs=[AnalysisInput(data=data, mime_type="application/pdf")],
+        model_deployments=settings.content_understanding_model_deployments or None,
+        processing_location=settings.content_understanding_processing_location,
     )
     result = await poller.result()
-    if result.content_format != "markdown" or result.string_index_type != "unicodeCodePoint":
-        raise ValueError("Document Intelligence must return Markdown with Unicode code-point spans")
-    if not result.pages or len(result.pages) > settings.max_document_pages:
-        raise ValueError("Document has no pages or exceeds max_document_pages")
-    extracted = []
-    page_spans = []
-    for page in result.pages:
-        spans = [ContentSpan(offset=span.offset, length=span.length) for span in page.spans or []]
-        if not spans and (page.words or page.lines):
-            raise ValueError("Nonblank Document Intelligence page has no Markdown spans")
-        text = span_text(result.content, spans)
-        extracted.append(Page(number=page.page_number, text=text))
-        page_spans.append(spans)
-    if [p.number for p in extracted] != list(range(1, len(extracted) + 1)):
-        raise ValueError("Document Intelligence returned non-contiguous physical pages")
-    if not any(page.text.strip() for page in extracted):
-        raise ValueError("Document Intelligence extracted no searchable text")
+    content, extracted, page_spans = extract_pages(result, settings)
     url = source_url(settings, blob_name)
     doc = Document(
         document_id=document_id(url),
@@ -161,7 +210,14 @@ async def ingest_pdf(
         title=blob_name.rsplit("/", 1)[-1],
         pages=extracted,
     )
-    manifest = markdown_manifest(doc, result.content, page_spans)
+    manifest = markdown_manifest(doc, content, page_spans)
+    analysis = json.dumps(result.as_dict(), ensure_ascii=False).encode("utf-8")
+    manifest.extraction = ExtractionMetadata(
+        analyzer_id=settings.content_understanding_analyzer,
+        api_version=CONTENT_UNDERSTANDING_API_VERSION,
+        analysis_blob=f"{doc.document_id}/{doc.revision}/analysis.json",
+        analysis_sha256=hashlib.sha256(analysis).hexdigest(),
+    )
     # Do not publish evidence for a PDF that changed while extraction was running.
     await blob.get_blob_properties(etag=props.etag, match_condition=MatchConditions.IfNotModified)
     for extracted_page, reference in zip(doc.pages, manifest.pages, strict=True):
@@ -173,9 +229,15 @@ async def ingest_pdf(
         )
     await pages.upload_blob(
         name=manifest.markdown_blob,
-        data=result.content.encode("utf-8"),
+        data=content.encode("utf-8"),
         overwrite=False,
         content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
+    )
+    await pages.upload_blob(
+        name=manifest.extraction.analysis_blob,
+        data=analysis,
+        overwrite=False,
+        content_settings=ContentSettings(content_type="application/json"),
     )
     # Publish the manifest last so it never points to Markdown that has not been uploaded.
     await pages.upload_blob(
