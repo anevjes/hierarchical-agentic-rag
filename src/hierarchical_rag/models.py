@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 
 class Record(BaseModel):
@@ -41,12 +41,40 @@ class PageReference(Record):
     spans: list[ContentSpan]
 
 
+class ArtifactReference(Record):
+    blob: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class FigureRecord(Record):
+    figure_id: str = Field(min_length=1)
+    kind: str = Field(min_length=1)
+    page_number: int = Field(ge=1)
+    source_url: str
+    source_region: str | None = None
+    markdown_span: ContentSpan
+    description: str | None = None
+    chart: dict[str, JsonValue] | None = None
+    mermaid: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class FigureArtifact(DocumentIdentity):
+    schema_version: Literal[1] = 1
+    provider: Literal["azure_content_understanding"] = "azure_content_understanding"
+    analyzer_id: str
+    api_version: str
+    generated: Literal[True] = True
+    figures: list[FigureRecord]
+
+
 class ExtractionMetadata(Record):
     provider: Literal["azure_content_understanding"] = "azure_content_understanding"
     analyzer_id: str
     api_version: str
     analysis_blob: str
     analysis_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    figures: ArtifactReference | None = None
 
 
 class DocumentManifest(DocumentIdentity):

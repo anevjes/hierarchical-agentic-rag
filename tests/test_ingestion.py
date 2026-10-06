@@ -106,7 +106,7 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     assert kwargs["inputs"][0].data.startswith(b"%PDF-")
     assert kwargs["inputs"][0].mime_type == "application/pdf"
     writes = [call.kwargs for call in pages.upload_blob.call_args_list]
-    assert len(writes) == 5
+    assert len(writes) == 6
     manifest = DocumentManifest.model_validate_json(writes[-1]["data"])
     assert "text" not in manifest.pages[0].model_dump()
     assert manifest.pages[1].spans[0].offset == split
@@ -124,6 +124,9 @@ async def test_ingestion_persists_unicode_physical_pages(settings):
     assert manifest.extraction.analysis_blob == writes[3]["name"]
     assert hashlib.sha256(writes[3]["data"]).hexdigest() == manifest.extraction.analysis_sha256
     assert json.loads(writes[3]["data"])["stringEncoding"] == "codePoint"
+    assert manifest.extraction.figures.blob == writes[4]["name"]
+    assert hashlib.sha256(writes[4]["data"]).hexdigest() == manifest.extraction.figures.sha256
+    assert json.loads(writes[4]["data"])["figures"] == []
     assert blob.get_blob_properties.call_count == 2
     assert blob.download_blob.call_args.kwargs["match_condition"] == MatchConditions.IfNotModified
     uploaded = search.upload_documents.call_args.kwargs["documents"]
@@ -202,7 +205,7 @@ async def test_ingestion_logs_stages_without_document_content(settings, caplog):
         "Rechecking source version",
         "Uploading artifacts",
         "Page uploads for a.pdf: 2/2 complete",
-        "Artifacts published for a.pdf: 5 blobs",
+        "Artifacts published for a.pdf: 6 blobs",
         "Indexing a.pdf: 2 chunks",
         "Index uploads for a.pdf: 2/2 chunks complete",
         "Looking for stale",

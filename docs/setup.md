@@ -142,8 +142,18 @@ network with access to all endpoints.
 hrag provision
 hrag ingest --blob "policies/claims.pdf"
 hrag ingest --prefix "policies/"
+hrag ingest --prefix "policies/" --top 20
 hrag ask "Which exclusions affect the emergency coverage?"
 ```
+
+`--top N` limits a container or prefix scan to the first N PDFs returned by Blob
+listing. N must be a positive integer; omitting it retains the unlimited scan.
+Non-PDFs are skipped without consuming the limit. A smaller matching set is
+ingested in full; no matching PDFs remains an error. Processing still stops on
+the first ingestion failure. The limit does not sort by modification time,
+skip previously ingested PDFs, or provide a continuation cursor.
+Use `--blob "name.pdf"` for one exact file; combining `--blob` with `--top` is
+rejected before Azure calls.
 
 ## Hybrid vector retrieval and migration
 
@@ -229,6 +239,34 @@ Query JSON is written to stdout; progress/errors go to stderr. Keep output files
 logs, and any enabled framework traces private: they can contain document text.
 The accelerator does not enable content-bearing telemetry exporters by default.
 
+## Applying retrieval cleanup
+
+New ingestion uses layout-aware filtering before chunk embedding. It removes
+page-number/page-break markers and later duplicates of confidently labelled
+running headers/footers, retaining the first occurrence and preserving footnotes,
+unique footer values and unlabelled body repetition. Stored source Markdown is
+not changed. See [chunking details](architecture.md#retrieval-chunking-versus-source-evidence).
+
+`HRAG_CHUNK_CHARS` defaults to 2400, with `HRAG_CHUNK_OVERLAP=200`.
+The size is a hard character cap; overlap can shrink at structural boundaries.
+CU paragraph spans and Markdown headings guide splitting, while fitting
+tables/figures/code blocks stay intact. Oversized structures produce a warning
+and use bounded slices instead of silently exceeding the cap.
+
+To update already indexed chunks, run:
+
+```powershell
+hrag ingest --blob "policies/claims.pdf"
+# Or the entire corpus:
+hrag ingest
+```
+
+This reruns CU and embeddings and publishes a new revision; it is not a free
+query-time cleanup. No extra provisioning is necessary on an already hybrid
+index. Validate that repeated boilerplate is reduced in Search `content`, while
+full page Markdown still includes it. Check figures, meaningful disclaimers and
+page links on representative PDFs before re-ingesting a large corpus.
+
 ## Markdown storage and migration
 
 New ingestion writes schema-v2 JSON manifests plus UTF-8 Markdown into the
@@ -238,6 +276,7 @@ configured `HRAG_PAGES_CONTAINER` (default `document-pages`):
 <document-id>/<revision>.json
 <document-id>/<revision>/document.md
 <document-id>/<revision>/analysis.json
+<document-id>/<revision>/figures.json
 <document-id>/<revision>/pages/0001.md
 <document-id>/<revision>/pages/0002.md
 ...
@@ -254,6 +293,30 @@ geometry and summary fields) for audit, not for query-time downloads. The option
 manifest `extraction` block records provider, analyzer, API version, raw-result
 blob path and SHA-256. Page/full Markdown hashes are verified on query reads;
 the raw-result hash is available for separate audit verification.
+
+`figures.json` is a dedicated, versioned export of detected figures:
+
+- `chart`: CU's Chart.js JSON for supported graphs, otherwise null.
+- `description`: CU-generated text for graphs/images, when returned.
+- `mermaid`: CU's Mermaid representation for diagrams, otherwise null.
+- `figure_id`, `kind`, `page_number`, `source_url` (including `#page=N`),
+  `source_region`, and `markdown_span` locate each figure in the source.
+- Top-level document identity, revision, ETag, analyzer/API version and
+  `generated: true` identify provenance. `markdown_span` uses Unicode code-point
+  offsets into full `document.md`, not offsets into the individual page file.
+- Missing descriptions generate both a log warning and a per-figure `warnings`
+  entry. Unsupported plots retain whatever description CU returned; no numerical
+  dataset is fabricated. Malformed/missing chart or Mermaid content is an error.
+
+Every successful ingestion writes this artifact, including `figures: []` for a
+document with no detected figures. It is uploaded before manifest publication.
+`extraction.figures` in the manifest records its `blob` path and `sha256`.
+Old manifests without it remain readable. Query-time tools still read Markdown,
+not this sidecar; consumers may independently download and verify its hash.
+No new model request is needed to export figures. Normal re-ingestion is
+required for existing documents and still incurs CU/embedding costs.
+Treat chart values and descriptions as generated interpretations, not verified
+measurements, and never execute returned chart/diagram content as trusted code.
 
 **Existing documents:** schema-v1 inline-page JSON remains readable and emits a
 warning suggesting re-ingestion. It does not get silently converted to Markdown
@@ -333,7 +396,7 @@ after extraction, so Content Understanding can already have incurred cost for an
 over-limit file. The byte cap is enforced before download/extraction.
 
 For a P-page PDF, ingestion writes P page blobs, one full-document Markdown blob,
-one raw analysis JSON and one manifest: **P + 3 writes**, plus Search operations. Storage holds both
+raw analysis JSON, figures JSON and one manifest: **P + 4 writes**, plus Search operations. Storage holds both
 the full Markdown and the page slices, trading some duplication for efficient
 page reads and efficient whole-document search.
 

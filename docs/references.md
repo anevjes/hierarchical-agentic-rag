@@ -53,7 +53,9 @@ Important version distinctions:
   than assuming older documentation's model keys match the live service.
 - Derived storage schema v2 uses a JSON manifest, per-page Markdown, and
   full-document Markdown, with canonical paths and SHA-256 integrity checks.
-  CU adds raw `analysis.json` and optional manifest extraction provenance.
+  CU adds raw `analysis.json`, a dedicated `figures.json` export, and optional
+  manifest extraction provenance. Chart objects retain CU's Chart.js content;
+  image descriptions and Mermaid diagrams preserve the service output.
   The reader continues to support schema-v1 inline-page JSON and older DI v2 manifests.
 - The SDK package versions and wire shapes are validated offline, while live
   service behavior still requires the smoke tests in [setup](setup.md).

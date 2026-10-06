@@ -14,9 +14,12 @@ from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import ContainerClient
 from openai import AsyncAzureOpenAI
 
+from .chunking import PageLayout, chunk_spans, retrieval_layout
 from .config import Settings
 from .embeddings import VECTOR_FIELD, embed_chunks
+from .figures import figure_artifact
 from .models import (
+    ArtifactReference,
     Chunk,
     ContentSpan,
     Document,
@@ -91,15 +94,22 @@ def markdown_manifest(
     )
 
 
-def chunks_for(document: Document, size: int, overlap: int) -> Iterable[Chunk]:
+def chunks_for(
+    document: Document,
+    size: int,
+    overlap: int,
+    *,
+    layouts: dict[int, PageLayout] | None = None,
+) -> Iterable[Chunk]:
     if size <= 0 or overlap < 0 or overlap >= size:
         raise ValueError("Require size > overlap >= 0")
     for page in document.pages:
-        for start in range(0, len(page.text), size - overlap):
-            text = page.text[start : start + size]
+        layout = layouts[page.number] if layouts is not None else PageLayout()
+        for span in chunk_spans(page.text, size, overlap, layout):
+            text = page.text[span.offset : span.offset + span.length]
             if text.strip():
                 yield Chunk(
-                    id=f"{document.document_id}-{document.revision}-{page.number}-{start}",
+                    id=f"{document.document_id}-{document.revision}-{page.number}-{span.offset}",
                     document_id=document.document_id,
                     revision=document.revision,
                     blob_name=document.blob_name,
@@ -110,8 +120,6 @@ def chunks_for(document: Document, size: int, overlap: int) -> Iterable[Chunk]:
                     page_count=len(document.pages),
                     content=text,
                 )
-            if start + size >= len(page.text):
-                break
 
 
 def odata_literal(value: str) -> str:
@@ -240,20 +248,55 @@ async def ingest_pdf(
         title=blob_name.rsplit("/", 1)[-1],
         pages=extracted,
     )
+    analyzed_document = result.contents[0]
+    if not isinstance(analyzed_document, DocumentContent):
+        raise ValueError("Chunk layout requires a Content Understanding document")
+    layouts = retrieval_layout(analyzed_document, page_spans)
+    chunks = list(
+        chunks_for(doc, settings.chunk_chars, settings.chunk_overlap, layouts=layouts)
+    )
+    if not chunks:
+        raise ValueError("No searchable body content remains after chunk filtering")
+    logger.info(
+        "Prepared %d structure-aware chunks for %s; stored page Markdown remains unchanged",
+        len(chunks),
+        blob_name,
+    )
     manifest = markdown_manifest(doc, content, page_spans)
     analysis = json.dumps(result.as_dict(), ensure_ascii=False).encode("utf-8")
+    figures = figure_artifact(
+        doc,
+        analyzed_document,
+        page_spans,
+        settings.content_understanding_analyzer,
+        CONTENT_UNDERSTANDING_API_VERSION,
+    )
+    figures_data = figures.model_dump_json(indent=2).encode("utf-8")
+    figures_reference = ArtifactReference(
+        blob=f"{doc.document_id}/{doc.revision}/figures.json",
+        sha256=hashlib.sha256(figures_data).hexdigest(),
+    )
+    logger.info(
+        "Prepared figure outputs for %s: %d figures, %d charts, %d diagrams",
+        blob_name,
+        len(figures.figures),
+        sum(figure.chart is not None for figure in figures.figures),
+        sum(figure.mermaid is not None for figure in figures.figures),
+    )
     manifest.extraction = ExtractionMetadata(
         analyzer_id=settings.content_understanding_analyzer,
         api_version=CONTENT_UNDERSTANDING_API_VERSION,
         analysis_blob=f"{doc.document_id}/{doc.revision}/analysis.json",
         analysis_sha256=hashlib.sha256(analysis).hexdigest(),
+        figures=figures_reference,
     )
     # Do not publish evidence for a PDF that changed while extraction was running.
     logger.info("Rechecking source version before publishing %s", blob_name)
     await blob.get_blob_properties(etag=props.etag, match_condition=MatchConditions.IfNotModified)
     stage_started = perf_counter()
     logger.info(
-        "Uploading artifacts for %s: revision=%s, %d pages plus Markdown, analysis and manifest",
+        "Uploading artifacts for %s: revision=%s, "
+        "%d pages plus Markdown, analysis, figures and manifest",
         blob_name,
         doc.revision,
         len(doc.pages),
@@ -293,6 +336,13 @@ async def ingest_pdf(
         content_settings=ContentSettings(content_type="application/json"),
     )
     logger.debug("Uploaded raw analysis JSON for %s", blob_name)
+    await pages.upload_blob(
+        name=figures_reference.blob,
+        data=figures_data,
+        overwrite=False,
+        content_settings=ContentSettings(content_type="application/json"),
+    )
+    logger.debug("Uploaded figures JSON for %s", blob_name)
     # Publish the manifest last so it never points to Markdown that has not been uploaded.
     await pages.upload_blob(
         name=manifest_name(doc.document_id, doc.revision),
@@ -303,10 +353,9 @@ async def ingest_pdf(
     logger.info(
         "Artifacts published for %s: %d blobs in %.1fs",
         blob_name,
-        len(doc.pages) + 3,
+        len(doc.pages) + 4,
         perf_counter() - stage_started,
     )
-    chunks = list(chunks_for(doc, settings.chunk_chars, settings.chunk_overlap))
     stage_started = perf_counter()
     logger.info(
         "Indexing %s: %d chunks into %s (batches of up to 100)",

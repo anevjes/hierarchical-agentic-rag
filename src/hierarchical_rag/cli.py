@@ -91,9 +91,10 @@ async def run(args: argparse.Namespace) -> None:
                 count = 1
             else:
                 logger.info(
-                    "Scanning source container %s for PDFs with prefix=%r",
+                    "Scanning source container %s for PDFs with prefix=%r, top=%s",
                     settings.source_container,
                     args.prefix,
+                    args.top if args.top is not None else "unlimited",
                 )
                 async for blob in source.list_blobs(name_starts_with=args.prefix):
                     if not blob.name.lower().endswith(".pdf"):
@@ -104,6 +105,9 @@ async def run(args: argparse.Namespace) -> None:
                         blob.name, settings, source, pages, intelligence, search, embeddings
                     )
                     count += 1
+                    if args.top is not None and count >= args.top:
+                        logger.info("Reached --top %d document limit; stopping scan", args.top)
+                        break
             if not count:
                 raise ValueError("No PDF blobs matched the ingestion request")
             logger.info(
@@ -152,9 +156,20 @@ def main() -> None:
     source = ingest.add_mutually_exclusive_group()
     source.add_argument("--blob", help="Exact PDF blob name")
     source.add_argument("--prefix", default="", help="Only scan this Blob prefix")
+    ingest.add_argument(
+        "--top",
+        type=int,
+        metavar="N",
+        help="Ingest at most N PDFs in Blob listing order (with optional --prefix, not --blob)",
+    )
     ask = commands.add_parser("ask", help="Investigate, open pages, then answer with citations")
     ask.add_argument("question")
     args = parser.parse_args()
+    if args.command == "ingest":
+        if args.top is not None and args.top <= 0:
+            parser.error("--top must be a positive integer")
+        if args.top is not None and args.blob:
+            parser.error("--top cannot be combined with --blob; use --prefix for multiple PDFs")
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",

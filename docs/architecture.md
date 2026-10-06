@@ -25,6 +25,48 @@ Out-of-range, overlapping, or out-of-order spans are rejected. A single
 unsegmented document with contiguous pages is required. Service warnings and
 figures without spans contained in a physical page are errors, not partial success.
 
+### Retrieval chunking versus source evidence
+
+`retrieval_layout` maps CU paragraph roles and table/figure spans from full-document
+Unicode offsets onto each stored page's local offsets, including pages assembled
+from multiple spans. Invalid layout bounds fail explicitly; missing paragraph
+spans generate warnings and leave text unfiltered.
+
+Filtering is deliberately conservative:
+
+- Explicit `PageBreak`/`PageNumber` Markdown metadata and simple numeric/Roman
+  `pageNumber` paragraphs are excluded from retrieval chunks.
+- CU `pageHeader`/`pageFooter` paragraphs or explicit Markdown header/footer
+  comments are compared across physical pages. Matching normalizes whitespace
+  only, not digits, dates or case. The first page carrying a value keeps it
+  searchable; later identical occurrences are excluded.
+- Repetition within one page, unlabelled body repetition, unique header/footer
+  values and `footnote` paragraphs are retained. The first-occurrence policy
+  protects discoverability of repeated disclaimers, rather than assuming that
+  every footer is unimportant.
+- Filtering never overrides a table, figure, fenced block or footnote span.
+  Structured metadata comments are considered as a whole, not partially stripped.
+
+The chunker works on contiguous retained source ranges. It prefers paragraph
+and heading boundaries and protects table/figure spans and CU Markdown structures
+when they fit within `chunk_chars`. Structures larger than the cap are split
+with a warning. `chunk_overlap` is a maximum, not a guaranteed fixed overlap:
+it can shrink or be omitted to avoid splitting structures or crossing filtered
+ranges. The fallback for oversized/unstructured text is character windows,
+not an LLM rewrite or semantic summarization.
+
+Every emitted chunk is an exact substring of the unchanged stored page, with
+its original local start offset in the chunk ID. Excluded regions never cause
+non-adjacent text to be concatenated. Full Markdown, raw CU JSON, page hashes,
+physical page counts and the query-time evidence contract remain unchanged.
+Chunk preparation completes before artifact publication; if no searchable
+content remains, ingestion fails and leaves old indexed revisions intact.
+
+This is retrieval cleanup, not source redaction. `open_pages` still exposes
+complete evidence and `search_document` still searches full cached pages.
+Undetected/mislabelled boilerplate can remain; inspect representative results.
+Existing indexes require re-ingestion/re-embedding, not a schema migration.
+
 ### Hybrid retrieval
 
 The ingester embeds each exact chunk's enriched Markdown using Azure OpenAI,
@@ -62,9 +104,19 @@ All artifacts live in the private derived container:
 | `<document-id>/<revision>.json` | Schema-v2 manifest: source identity/ETag, full-Markdown path/hash/length, and each physical page's path/hash/length/spans |
 | `<document-id>/<revision>/document.md` | Complete, unmodified Content Understanding Markdown |
 | `<document-id>/<revision>/analysis.json` | Raw CU result, including figures, source geometry and fields; audit only |
+| `<document-id>/<revision>/figures.json` | Dedicated generated chart JSON/image descriptions/diagram text with source identity and physical-page links |
 | `<document-id>/<revision>/pages/0001.md` | Page 1's Markdown; analogous files for every page, including blank pages |
 
 The manifest contains **no inline page text**. Its optional `extraction` block
+also includes an optional `figures` path/hash reference for new revisions.
+Figure output is validated and serialized before any artifacts are published.
+Graphs retain CU's Chart.js object, diagrams retain Mermaid, and other images
+retain descriptions; the application does not infer missing numerical values.
+Figure Markdown remains unchanged and participates in the existing chunk/index
+path. The sidecar is for downstream consumption, not another query-time download.
+Missing descriptions are explicit warnings, not fabricated fallback text.
+
+The extraction block
 identifies CU, the analyzer/API version and raw-analysis path/hash. Older DI
 manifests do not have this block and remain valid. Markdown and raw analysis are uploaded first,
 then the manifest, then the Search chunks. A failed Markdown upload cannot publish

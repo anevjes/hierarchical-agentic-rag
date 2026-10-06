@@ -53,6 +53,26 @@ contract and full-page extraction cache. Blob remains the original source. We do
 pretend that Text Split "pages" are physical PDF pages, or that every native
 ingestion configuration guarantees the metadata this tool needs.
 
+### Retrieval chunking
+
+Chunking is physical-page-bounded and structure-aware, with a maximum of 2,400
+characters and up to 200 characters of overlap by default. It prefers CU
+paragraph/Markdown heading boundaries and keeps tables, figures and fenced blocks
+together when they fit. Oversized structures are split with a warning.
+
+Page-number/page-break metadata is excluded from indexed text and embeddings.
+CU-labelled running headers/footers (or their explicit Markdown metadata) are
+deduplicated across pages: **the first occurrence stays searchable**, while
+later identical occurrences are omitted. Unique footer text, footnotes, and
+unlabelled repeated body text are retained. Filtering never rewrites stored page
+Markdown or joins text across removed regions; every chunk remains an exact
+substring of its physical page.
+
+Re-ingest existing PDFs to apply the new filtering and regenerate their vectors.
+No additional Search schema change is needed if hybrid retrieval is already
+provisioned. `open_pages` and `search_document` still use the full, unchanged
+page content, including headers/footers.
+
 ### Persisted document cache
 
 Each ingestion writes an immutable extraction revision:
@@ -64,6 +84,7 @@ document-pages/
     <revision>/
       document.md               # full Content Understanding Markdown
       analysis.json             # raw CU result, figures, geometry and provenance
+      figures.json              # graph JSON, image descriptions and physical-page links
       pages/
         0001.md                 # physical PDF page 1
         0002.md                 # physical PDF page 2
@@ -81,6 +102,20 @@ updating dependencies, CU configuration and the hybrid Search schema.
 See [storage and migration](docs/setup.md#markdown-storage-and-migration).
 
 ### Visual-rich PDFs
+
+Each new ingestion also publishes `figures.json` in the extraction revision.
+Its `figures` array contains each detected figure's ID, kind, physical page,
+source PDF page link, CU source geometry, full-Markdown span and description.
+Supported graphs have a `chart` object containing CU's original Chart.js JSON
+(labels, datasets, axes/options when returned); diagrams can have `mermaid` text.
+Other images retain CU's textual description with `chart: null`.
+The artifact includes source identity/ETag, analyzer/API version and
+`generated: true`. Missing descriptions are explicitly flagged in `warnings`.
+
+This exports the existing CU result, without another LLM call, invented data or
+image-asset downloads. Page Markdown still carries CU descriptions/chart blocks
+into indexing. The manifest records the figures artifact path and SHA-256 hash.
+Re-ingest existing PDFs to produce the new artifact; no Search schema change is needed.
 
 Figure descriptions make labels, legends and depicted relationships searchable,
 including in scientific cross-sections and maps. This is not guaranteed scientific
@@ -112,6 +147,19 @@ hrag ask "What conditions apply to the extended warranty?"
 
 Use `hrag ingest` without `--blob` to process all PDFs in the source container;
 `--prefix "manuals/"` narrows the scan. Non-PDF blobs are reported and skipped.
+Use `--top N` to cap a scan at N PDFs in Blob listing order:
+
+```powershell
+hrag ingest --top 20
+hrag ingest --prefix "manuals/" --top 20
+```
+
+`N` must be positive; omitted means unlimited. Non-PDF blobs do not count.
+Fewer matching PDFs is valid; no matches or an ingestion failure still raises an
+error. This is not a newest-first selection or a resume cursor: repeated runs
+select the first matching PDFs again. `--top` cannot be combined with `--blob`,
+which selects one exact PDF.
+
 Put PDFs into the source container with your normal Azure upload tooling first.
 
 Ingestion shows timestamped progress by default: download, Content Understanding
