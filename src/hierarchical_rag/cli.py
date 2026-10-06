@@ -17,6 +17,9 @@ from azure.storage.blob.aio import BlobServiceClient
 from openai import AsyncAzureOpenAI
 
 from .agent import investigate
+from .broad import investigate_broad
+from .broad_retrieval import AzureBroadBackend, UnindexedDocumentError
+from .catalog import validate_catalog_index
 from .config import Settings
 from .embeddings import EMBEDDING_API_VERSION
 from .ingestion import CONTENT_UNDERSTANDING_API_VERSION, ingest_pdf
@@ -51,7 +54,7 @@ async def run(args: argparse.Namespace) -> None:
             status = result.status if result is not None else "completed"
         finally:
             report = usage.report(status)
-            if args.command in ("ingest", "ask"):
+            if args.command in ("ingest", "ask", "catalog"):
                 usage.log_summary(report)
             if report_file is not None:
                 try:
@@ -63,7 +66,7 @@ async def run(args: argparse.Namespace) -> None:
         if result is not None:
             result.usage = report
             print(result.model_dump_json(indent=2))
-        elif args.command == "ingest":
+        elif args.command in ("ingest", "catalog"):
             print(report.model_dump_json(indent=2))
 
 
@@ -90,8 +93,60 @@ async def _run(
                     api_version=SEARCH_API_VERSION,
                 )
             )
-            await provision(settings, index_client)
+            await provision(settings, index_client, include_catalog=getattr(args, "catalog", False))
             logger.info("Index, knowledge source, and knowledge base are ready")
+        elif args.command == "catalog":
+            index_client = await stack.enter_async_context(SearchIndexClient(
+                settings.search_endpoint, credential, api_version=SEARCH_API_VERSION,
+            ))
+            validate_catalog_index(await index_client.get_index(settings.catalog_index_name))
+            catalog_search = await stack.enter_async_context(SearchClient(
+                settings.search_endpoint, settings.catalog_index_name, credential,
+                api_version=SEARCH_API_VERSION,
+            ))
+            chunk_search = await stack.enter_async_context(SearchClient(
+                settings.search_endpoint, settings.index_name, credential,
+                api_version=SEARCH_API_VERSION,
+            ))
+            kb = await stack.enter_async_context(KnowledgeBaseRetrievalClient(
+                endpoint=settings.search_endpoint, credential=credential,
+                knowledge_base_name=settings.knowledge_base_name,
+                api_version=SEARCH_API_VERSION,
+            ))
+            catalog_backend = AzureBroadBackend(
+                settings, kb, source, pages,
+                catalog=catalog_search, chunks=chunk_search, usage=usage,
+            )
+            if args.blob:
+                await catalog_backend.backfill_catalog(args.blob)
+                count = 1
+            else:
+                count = 0
+                async for blob in source.list_blobs(name_starts_with=args.prefix):
+                    if not blob.name.lower().endswith(".pdf"):
+                        logger.warning("Skipping non-PDF blob: %s", blob.name)
+                        continue
+                    try:
+                        await catalog_backend.backfill_catalog(blob.name)
+                    except UnindexedDocumentError:
+                        usage.increment("documents_skipped_unindexed")
+                        logger.warning(
+                            "Skipping unindexed PDF: %s; ingest it before catalog backfill",
+                            blob.name,
+                        )
+                        continue
+                    count += 1
+                    if args.top is not None and count >= args.top:
+                        break
+                if not count:
+                    raise ValueError(
+                        "No indexed PDF blobs matched the catalog request; "
+                        "ingest matching PDFs before building the catalog"
+                    )
+            logger.info(
+                "Catalogued %d PDF(s); skipped %d unindexed PDF(s)",
+                count, usage.counters.get("documents_skipped_unindexed", 0),
+            )
         elif args.command == "ingest":
             started = perf_counter()
             index_client = await stack.enter_async_context(
@@ -100,6 +155,13 @@ async def _run(
                 )
             )
             validate_embedding_index(settings, await index_client.get_index(settings.index_name))
+            catalog = None
+            if getattr(args, "catalog", False):
+                validate_catalog_index(await index_client.get_index(settings.catalog_index_name))
+                catalog = await stack.enter_async_context(SearchClient(
+                    settings.search_endpoint, settings.catalog_index_name, credential,
+                    api_version=SEARCH_API_VERSION,
+                ))
             logger.info("Validated index embedding configuration before PDF analysis")
             search = await stack.enter_async_context(
                 SearchClient(
@@ -131,6 +193,7 @@ async def _run(
                 total_chunks = await ingest_pdf(
                     args.blob, settings, source, pages, intelligence, search, embeddings,
                     usage=usage,
+                    catalog=catalog,
                 )
                 count = 1
             else:
@@ -148,6 +211,7 @@ async def _run(
                     total_chunks += await ingest_pdf(
                         blob.name, settings, source, pages, intelligence, search, embeddings,
                         usage=usage,
+                        catalog=catalog,
                     )
                     count += 1
                     if args.top is not None and count >= args.top:
@@ -185,6 +249,27 @@ async def _run(
             )
             stack.push_async_callback(client.project_client.close)
             stack.push_async_callback(client.client.close)
+            if getattr(args, "broad", False):
+                catalog_search = await stack.enter_async_context(SearchClient(
+                    settings.search_endpoint, settings.catalog_index_name, credential,
+                    api_version=SEARCH_API_VERSION,
+                ))
+                if await catalog_search.get_document_count() == 0:
+                    raise ValueError(
+                        "Document catalog is empty; run hrag provision --catalog "
+                        "then hrag catalog (existing indexed PDFs) or hrag ingest --catalog"
+                    )
+                chunk_search = await stack.enter_async_context(SearchClient(
+                    settings.search_endpoint, settings.index_name, credential,
+                    api_version=SEARCH_API_VERSION,
+                ))
+                broad_backend = AzureBroadBackend(
+                    settings, kb, source, pages, catalog=catalog_search, chunks=chunk_search,
+                    usage=usage,
+                )
+                return await investigate_broad(
+                    args.question, settings, broad_backend, client, usage=usage
+                )
             backend = AzureEvidenceBackend(settings, kb, source, pages, usage=usage)
             return await investigate(
                 args.question, Investigation(settings, backend), client, usage=usage
@@ -198,20 +283,37 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Page-expanding Foundry IQ accelerator")
     parser.add_argument("--verbose", action="store_true")
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("provision", help="Create/update Search data-plane objects")
-    ingest = commands.add_parser("ingest", help="Extract and index PDFs already in Blob")
-    source = ingest.add_mutually_exclusive_group()
-    source.add_argument("--blob", help="Exact PDF blob name")
-    source.add_argument("--prefix", default="", help="Only scan this Blob prefix")
-    ingest.add_argument(
-        "--top",
-        type=int,
-        metavar="N",
-        help="Ingest at most N PDFs in Blob listing order (with optional --prefix, not --blob)",
+    provision_parser = commands.add_parser(
+        "provision", help="Create/update Search data-plane objects"
     )
+    ingest = commands.add_parser("ingest", help="Extract and index PDFs already in Blob")
+    catalog_parser = commands.add_parser(
+        "catalog", help="Build document catalog from indexed Markdown; no CU/embedding calls"
+    )
+    for command in (ingest, catalog_parser):
+        source = command.add_mutually_exclusive_group()
+        source.add_argument("--blob", help="Exact PDF blob name")
+        source.add_argument("--prefix", default="", help="Only scan this Blob prefix")
+        command.add_argument(
+            "--top", type=int, metavar="N",
+            help=(
+                "Catalogue at most N indexed PDFs; skip unindexed PDFs without counting them"
+                if command is catalog_parser else
+                "Process at most N PDFs in Blob listing order (with --prefix, not --blob)"
+            ),
+        )
     ask = commands.add_parser("ask", help="Investigate, open pages, then answer with citations")
     ask.add_argument("question")
-    for command in (ingest, ask):
+    ask.add_argument(
+        "--broad", action="store_true",
+        help="Plan and compare evidence across documents using the document catalog",
+    )
+    for command in (provision_parser, ingest):
+        command.add_argument(
+            "--catalog", action="store_true",
+            help="Also provision/populate the optional document discovery catalog",
+        )
+    for command in (ingest, ask, catalog_parser):
         command.add_argument(
             "--usage-report",
             type=Path,
@@ -219,7 +321,7 @@ def main() -> None:
             help="Write a usage/cost JSON report, including on failure; path must not exist",
         )
     args = parser.parse_args()
-    if args.command == "ingest":
+    if args.command in ("ingest", "catalog"):
         if args.top is not None and args.top <= 0:
             parser.error("--top must be a positive integer")
         if args.top is not None and args.blob:

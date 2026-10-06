@@ -234,6 +234,156 @@ This report does not include CU page meters, Search capacity/semantic charges,
 Blob/storage/network costs, taxes, or unseen billed retries. It must not be used
 as a complete invoice or a hard spend limit.
 
+## Broad cross-document workflow
+
+This is an explicit `hrag ask --broad` mode. Existing focused queries, indexes and
+stored manifests remain compatible; nothing requires a new CU extraction merely
+to enable broader reasoning.
+
+### Enable and populate the document catalog
+
+1. Set `HRAG_CATALOG_INDEX_NAME` to a dedicated index name, different from
+   `HRAG_INDEX_NAME`. The default is `document-catalog`.
+2. Run `hrag provision --catalog` using the existing provisioning identity.
+   This also follows the existing chunk-index/source/base provisioning path.
+3. For **already indexed** PDFs, run `hrag catalog --top 20`, optionally with
+   `--prefix "reports/"`, or `--blob "reports/study.pdf"` for one PDF.
+   This reads current indexed provenance and persisted full Markdown; it does not
+   analyze PDFs, generate embeddings, create a new extraction revision or modify
+   existing chunks. Source ETag, manifest identity and Markdown hashes are checked.
+4. For newly ingested PDFs, use `hrag ingest --catalog` with the usual selectors.
+   The catalog row is published only after chunk uploads and stale-revision
+   cleanup succeed.
+5. Run `hrag ask --broad "Compare ..."` with an optional new `--usage-report` path.
+
+Batch `catalog` scans Blob listing order and skips non-PDFs and PDFs without
+indexed chunks. Each unindexed PDF emits a warning and increments the usage
+counter `documents_skipped_unindexed`. `--top N` counts **successfully catalogued
+documents**, so skipped files do not consume the limit; fewer than N eligible
+documents is valid, but zero remains an error. `documents_started` includes
+attempted unindexed PDFs; `documents_completed` counts only published entries.
+This differs from ingestion, which still processes every selected PDF.
+
+An exact `catalog --blob "name.pdf"` request remains strict: an unindexed PDF
+raises an error explaining that ingestion is needed first. Skipping is limited
+to the specific no-indexed-chunks condition in batch mode. Authentication,
+service, stale-source, missing-artifact, integrity and mixed-revision failures
+still stop the run. No PDFs are automatically ingested during backfill.
+
+Entries published before a failure remain available. Rerunning the command
+refreshes catalog rows without repeating CU/embedding work. Use a new usage-report
+filename, for example `--usage-report .\catalog-usage-retry.json`, because report
+files are never overwritten. Batch skipping may require scanning many blobs when
+only a small proportion are indexed; use `--prefix` to narrow the scan.
+
+Catalog provisioning requires Search Service Contributor. Backfill requires
+index-definition read permission for preflight, Search Index Data Reader on the
+chunk index, Search Index Data Contributor on the catalog, and Blob read access
+to both source and derived artifacts. Broad queries require Search Index Data
+Reader on both indexes plus existing IQ, Blob and model permissions. Search's
+managed identity still performs query vectorization.
+
+The catalog has one replaceable row per document ID, with revision/ETag, source
+identity, title, page count, a bounded extractive overview and section navigation.
+Up to six 500-character prose samples are spread across a report; up to 200
+Markdown headings are retained. Fence content is excluded from the prose samples.
+Ranges are navigation approximations and may overlap on heading pages. Dates,
+entities and report categories are not guessed. These fields are not citations.
+There is no additional model call for this metadata.
+
+Catalog discovery uses text search plus semantic ranking. IQ retains hybrid chunk
+discovery, including visual descriptions/chart content. A document appearing only
+in IQ can participate with an explicitly labelled chunk navigation hint; the
+catalog must exist and contain at least one row. Partially catalogued corpora have
+less document-level discovery coverage, which should be considered in evaluation.
+
+Use `ingest --catalog` for future updates. Ordinary `ingest` does not update the
+optional catalog. Refresh with `catalog` afterward: mixed catalog/IQ revisions
+fail rather than combining old and new evidence. Publishing indexes is not
+transactional; avoid querying while re-ingestion/backfill is active. A catalog
+write failure leaves successfully indexed chunks intact and reports failure;
+retry `catalog` without paying for CU again.
+
+### Query execution and budgets
+
+1. A tool-free MAF planner produces bounded, focused research facets and explicit
+   minimum document counts (at least two overall). A request exceeding the
+   configured document budget returns `budget_exhausted`; it is not quietly relaxed.
+2. Each facet runs one catalog search and one IQ search. Document IDs are
+   deduplicated per result list, ranked using reciprocal rank contributions,
+   then selected with preference for less-covered facets.
+3. Independent MAF workers investigate selected documents under a semaphore.
+   Workers use document/revision-filtered hybrid chunk searches, returning up to
+   three distinct candidate pages per search after overfetching. They open
+   physical pages lazily, can expand adjacent pages or search non-adjacent pages,
+   and do not load the full Markdown merely to locate keywords.
+4. Each worker returns bounded evidence notes with exact quotes from opened
+   pages. A note may cover multiple facets. An unsupported quote or unknown
+   evidence ID fails the query.
+5. The coverage assessor reviews notes and gaps across documents. Code checks
+   per-facet and overall distinct-document requirements. Missing coverage returns
+   `insufficient_context`, or `budget_exhausted` when relevant worker limits were
+   reached; no answer is synthesized. Workers can loop on gaps locally, but the
+   coordinator does not automatically restart discovery after this final gate.
+6. The writer receives compact verified-quote notes and authoritative source/page
+   metadata, not all opened page bodies. Final quotes must occur in both the
+   approved notes and the full opened pages. Final citations must also cover
+   required documents for every facet.
+
+Defaults (all have the `HRAG_` prefix):
+
+| Setting | Default | Meaning |
+|---|---:|---|
+| `BROAD_MAX_DOCUMENTS` | 6 | Maximum selected document workers |
+| `BROAD_CONCURRENCY` | 3 | Concurrent workers, each with separate session/state |
+| `BROAD_MAX_FACETS` | 4 | Planner search facets |
+| `BROAD_CANDIDATES_PER_QUERY` | 20 | Distinct-document candidates retained per discovery source/facet |
+| `BROAD_MAX_TOOL_CALLS` | 60 | Total worker-tool allocation |
+| `BROAD_MAX_SEARCHES` | 24 | Catalog + IQ discovery + document-scoped searches |
+| `BROAD_MAX_PAGES` | 48 | Total unique opened-page allocation |
+| `BROAD_MAX_CONTEXT_CHARS` | 150000 | Total unique retrieved/opened text charged to workers |
+| `BROAD_TIMEOUT_SECONDS` | 300 | Whole query, including planning and synthesis |
+| `BROAD_MAX_EVIDENCE_RECORDS` | 8 | Maximum notes returned by each worker |
+| `BROAD_QUOTE_CHARS` | 1200 | Maximum length of each verified quote |
+
+After discovery, remaining search allowance and other worker budgets are split
+equally using integer division across selected documents. Unused quota is not
+reassigned. This is intentionally conservative and deterministic: workers never
+mutate one shared investigation state. Search budget must cover two calls per
+maximum facet plus at least one search per maximum document; tool/page/character
+budgets must permit each selected document to start. Invalid combinations fail
+configuration validation.
+
+Character limits count unique discovery/evidence text, **not actual cumulative
+model input tokens**; repeated conversation context, navigation, model output and
+the coordinator add usage. This is not a hard token or dollar spending cap.
+The native MAF invocation limits remain in effect per run as well. Reduce
+concurrency for quota pressure; increasing it can lower latency but does not
+reduce the number of model calls or guarantee lower cost.
+
+Service errors cancel sibling workers and propagate. They are never converted
+into missing evidence. A global deadline cancels workers and returns an explicit
+budget outcome with completed usage retained. An individual worker budget gap
+can coexist with a valid answer only if the remaining verified evidence passes
+all coverage/citation requirements; its gap remains in the result.
+
+### Evaluate breadth and efficiency
+
+Use the result's `broad.documents`, `broad.coverage` and `usage` together:
+
+- Distinct discovered, selected, investigated and cited documents.
+- Covered facets, documented omissions, and requirements not met.
+- Opened pages not cited, verified quote characters and model-stage token totals.
+- Latency and measured-token cost at a fixed answer-quality threshold.
+
+The application cannot calculate relevant-document recall or factual correctness
+without labelled reference cases. Evaluate a fixed collection of cross-report
+questions with known supporting pages, contradictions and absent evidence;
+compare focused/broad outputs against those references. Offline tests verify
+isolation, limits, citations, coverage and SDK serialization, not real-corpus
+retrieval quality or model reasoning accuracy. A broad answer is always a
+comparison of **selected retrieved reports**, never proof of exhaustive coverage.
+
 ## Hybrid vector retrieval and migration
 
 Configure one embedding endpoint/deployment/model/dimension combination for both

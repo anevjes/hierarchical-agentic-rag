@@ -221,6 +221,61 @@ cost is `null`, never an invented zero. See
 [usage and cost configuration](docs/setup.md#usage-and-cost-reporting) for rates,
 failure accounting and coverage details.
 
+### Broad cross-document reasoning (opt-in)
+
+Use `--broad` for a comparison across reports. Plain `hrag ask` keeps the original
+focused investigation, including its requirement to open every selected hit page.
+
+```powershell
+# Adds a small document-level discovery index; existing chunk/IQ configuration stays in use.
+hrag provision --catalog
+
+# Existing successfully indexed PDFs: reuse stored Markdown, with NO CU or embedding calls.
+hrag catalog --prefix "manuals/" --top 20 --usage-report .\catalog-usage.json
+
+# Alternatively, populate/update the catalog during NEW ingestion.
+hrag ingest --catalog --blob "manuals/new-report.pdf"
+
+hrag ask --broad "Compare the Houtman Sub-basin study with other reports on the same area. Where do interpretations agree or disagree, and how do methods and limitations affect the comparison? Cite at least two distinct reports." --usage-report .\broad-usage.json
+```
+
+Broad mode plans focused search facets, combines document-catalog search with IQ
+chunk discovery, deduplicates by document and diversifies selection across facets.
+At most six documents are selected by default, with three concurrent MAF workers.
+Each worker has isolated state and a reserved share of the global page, search,
+tool-call and evidence-character budgets. Its follow-up hybrid searches are
+filtered to its document/revision and deduplicated by page; it opens only relevant
+evidence pages, not every discovery candidate.
+
+Workers return compact claims, methods, limitations and exact opened-page quotes.
+A separate coverage assessment checks each planned facet and required independent
+document counts before the writer compares sources. Final quotes are revalidated
+against the full stored pages and the approved evidence packet. Service/provenance
+failures remain errors, not silently omitted reports.
+
+The JSON result includes `broad.plan`, per-document selection/investigation status,
+verified notes, coverage gaps, and the number of distinct documents cited.
+Unselected candidates remain visible. This is **not an exhaustive corpus review**.
+Usage reports include planning, workers, coverage assessment and writing, plus
+discovered/selected/investigated/cited documents, covered facets and unused opened
+pages. Parallelism can reduce latency, but does not guarantee lower token cost.
+
+Catalog overviews are **extractive navigation samples**, not LLM-generated
+summaries or evidence. They sample prose across each report and include Markdown
+heading-to-page navigation; no topics, dates or entities are invented.
+Catalog backfill verifies existing source revisions and stored Markdown hashes.
+Batch catalog runs skip unindexed PDFs with a warning; `--top 20` counts up to
+20 successfully catalogued PDFs, not skipped files. The usage summary records
+`documents_skipped_unindexed`. An explicit `catalog --blob` still fails for an
+unindexed PDF, and a batch with no eligible indexed PDFs also fails. Service,
+stale-source, integrity and mixed-revision errors still stop processing.
+Keep the catalog current with `ingest --catalog` or rerun `catalog` after ordinary
+ingestion. Mixed revisions fail explicitly.
+
+See [broad workflow setup and budgets](docs/setup.md#broad-cross-document-workflow)
+and [architecture](docs/architecture.md#broad-mode-discovery-and-evidence) for details.
+The architecture image below depicts the original focused workflow.
+
 ## Azure prerequisites
 
 See [setup and operations](docs/setup.md) for resources, RBAC, model capabilities,

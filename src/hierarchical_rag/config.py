@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     max_context_chars: int = Field(default=100_000, ge=1000)
     query_timeout_seconds: int = Field(default=180, ge=1)
     token_rates_usd_per_million: dict[str, TokenRates] = Field(default_factory=dict)
+    catalog_index_name: str = "document-catalog"
+    broad_max_documents: int = Field(default=6, ge=2, le=20)
+    broad_concurrency: int = Field(default=3, ge=1, le=8)
+    broad_max_facets: int = Field(default=4, ge=1, le=8)
+    broad_candidates_per_query: int = Field(default=20, ge=2, le=50)
+    broad_max_tool_calls: int = Field(default=60, ge=4, le=200)
+    broad_max_searches: int = Field(default=24, ge=4, le=100)
+    broad_max_pages: int = Field(default=48, ge=2, le=200)
+    broad_max_context_chars: int = Field(default=150_000, ge=2000)
+    broad_timeout_seconds: int = Field(default=300, ge=1)
+    broad_max_evidence_records: int = Field(default=8, ge=1, le=20)
+    broad_quote_chars: int = Field(default=1200, ge=100, le=4000)
 
     @field_validator(
         "storage_account_url",
@@ -77,6 +89,16 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_relationships(self) -> "Settings":
+        if self.catalog_index_name == self.index_name:
+            raise ValueError("Document catalog and chunk index names must differ")
+        if self.broad_max_searches < 2 * self.broad_max_facets + self.broad_max_documents:
+            raise ValueError("Broad search budget must cover discovery and one search per document")
+        if (
+            self.broad_max_tool_calls < 2 * self.broad_max_documents
+            or self.broad_max_pages < self.broad_max_documents
+            or self.broad_max_context_chars < 1000 * self.broad_max_documents
+        ):
+            raise ValueError("Broad budgets must permit each selected document to be investigated")
         if self.source_container == self.pages_container:
             raise ValueError("Source and derived-page containers must differ")
         if self.chunk_overlap >= self.chunk_chars:

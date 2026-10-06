@@ -14,6 +14,7 @@ from azure.storage.blob import ContentSettings
 from azure.storage.blob.aio import ContainerClient
 from openai import AsyncAzureOpenAI
 
+from .catalog import publish_catalog
 from .chunking import PageLayout, chunk_spans, retrieval_layout
 from .config import Settings
 from .embeddings import VECTOR_FIELD, embed_chunks
@@ -193,6 +194,7 @@ async def ingest_pdf(
     embeddings: AsyncAzureOpenAI,
     *,
     usage: UsageTracker | None = None,
+    catalog: SearchClient | None = None,
 ) -> int:
     usage = usage or UsageTracker("ingest", settings.token_rates_usd_per_million)
     usage.increment("documents_started")
@@ -443,6 +445,8 @@ async def ingest_pdf(
             len(stale),
         )
     logger.info("Stale cleanup finished for %s in %.1fs", blob_name, perf_counter() - stage_started)
+    if catalog is not None:
+        await publish_catalog(doc, catalog, usage)
     logger.info(
         "Ingestion complete for %s: %d pages, %d chunks, revision=%s, elapsed=%.1fs",
         blob_name,

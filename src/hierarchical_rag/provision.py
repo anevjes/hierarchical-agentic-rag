@@ -24,6 +24,7 @@ from azure.search.documents.indexes.models import (
     VectorSearchProfile,
 )
 
+from .catalog import catalog_index, validate_catalog_index
 from .config import Settings
 from .embeddings import VECTOR_FIELD
 from .models import Chunk
@@ -155,7 +156,9 @@ def validate_embedding_index(settings: Settings, index: SearchIndex) -> None:
         )
 
 
-async def provision(settings: Settings, client: SearchIndexClient) -> None:
+async def provision(
+    settings: Settings, client: SearchIndexClient, *, include_catalog: bool = False
+) -> None:
     try:
         existing = await client.get_index(settings.index_name)
     except ResourceNotFoundError:
@@ -171,3 +174,11 @@ async def provision(settings: Settings, client: SearchIndexClient) -> None:
     await client.create_or_update_index(index_definition(settings))
     await client.create_or_update_knowledge_source(knowledge_source_definition(settings))
     await client.create_or_update_knowledge_base(knowledge_base_definition(settings))
+    if include_catalog:
+        try:
+            existing_catalog = await client.get_index(settings.catalog_index_name)
+        except ResourceNotFoundError:
+            existing_catalog = None
+        if existing_catalog is not None:
+            validate_catalog_index(existing_catalog)
+        await client.create_or_update_index(catalog_index(settings.catalog_index_name))

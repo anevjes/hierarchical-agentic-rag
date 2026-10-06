@@ -1,0 +1,67 @@
+{
+  "run_id": "1c69c8c354cc45efb231506d08a553da",
+  "command": "ask",
+  "status": "budget_exhausted",
+  "started_at": "2026-10-06T05:56:56.968577Z",
+  "finished_at": "2026-10-06T05:57:55.643139Z",
+  "elapsed_seconds": 58.675,
+  "counters": {
+    "artifact_blobs_downloaded": 21,
+    "artifact_bytes_downloaded": 388262,
+    "tool_calls": 8,
+    "iq_searches": 1,
+    "selected_chunks": 8,
+    "documents_opened": 1,
+    "pages_opened": 19,
+    "pages_cached": 62,
+    "evidence_characters": 99476
+  },
+  "reported_tokens": {
+    "input_tokens": 194178,
+    "output_tokens": 1800,
+    "total_tokens": 195978,
+    "cached_input_tokens": 157485,
+    "reasoning_output_tokens": 320
+  },
+  "events": [
+    {
+      "stage": "iq_retrieval",
+      "deployment": null,
+      "document": null,
+      "status": "completed",
+      "elapsed_seconds": 4.866,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    },
+    {
+      "stage": "investigator",
+      "deployment": "gpt-5.6-sol",
+      "document": null,
+      "status": "completed",
+      "elapsed_seconds": 53.617,
+      "input_tokens": 194178,
+      "output_tokens": 1800,
+      "total_tokens": 195978,
+      "cached_input_tokens": 157485,
+      "reasoning_output_tokens": 320,
+      "estimated_token_cost_usd": null
+    }
+  ],
+  "rates_usd_per_million": {},
+  "estimated_token_cost_usd": null,
+  "unpriced_events": 2,
+  "limitations": [
+    "Token totals sum reported counters only; null means unavailable, not zero.",
+    "CU internal tokens and IQ/Search query-vectorization tokens are not exposed.",
+    "MAF usage includes tool-loop calls; aborted runs may omit earlier calls.",
+    "SDK retries, timeouts and missing usage can leave billed work unreported.",
+    "Cost is a partial token-only USD estimate from operator rates, not an Azure bill.",
+    "CU page meters, Search capacity/semantic, Blob, networking and taxes excluded.",
+    "Cached/reasoning tokens are subsets of input/output, not additional tokens.",
+    "Without a cached_input rate, all reported input tokens use the input rate."
+  ]
+}

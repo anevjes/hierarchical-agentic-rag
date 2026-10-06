@@ -17,7 +17,9 @@ class BudgetExceeded(RuntimeError):
 class Investigation:
     """Mutable evidence state, scoped to exactly one question and one caller."""
 
-    def __init__(self, settings: Settings, backend: EvidenceBackend) -> None:
+    def __init__(
+        self, settings: Settings, backend: EvidenceBackend, *, require_all_hit_pages: bool = True
+    ) -> None:
         self.settings = settings
         self.backend = backend
         self.tool_calls = 0
@@ -30,6 +32,7 @@ class Investigation:
         self.required_pages: set[tuple[str, int]] = set()
         self.queries: set[str] = set()
         self.budget_reason: str | None = None
+        self.require_all_hit_pages = require_all_hit_pages
 
     def _exhaust(self, reason: str) -> NoReturn:
         self.budget_reason = reason
@@ -72,7 +75,8 @@ class Investigation:
             if previous is not None and previous.revision != hit.revision:
                 raise ValueError("Mixed document revisions retrieved; finish ingestion and retry")
             self.hits[hit.id] = hit
-            self.required_pages.add((hit.document_id, hit.page_number))
+            if self.require_all_hit_pages:
+                self.required_pages.add((hit.document_id, hit.page_number))
         logger.info("IQ search %d: %d hits selected", self.searches, len(selected))
         return json.dumps(
             {

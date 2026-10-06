@@ -141,6 +141,64 @@ class Answer(Record):
     citations: list[Citation] = Field(min_length=1)
 
 
+class SearchFacet(Record):
+    facet_id: str = Field(min_length=1, max_length=60)
+    description: str = Field(min_length=1, max_length=500)
+    query: str = Field(min_length=1, max_length=1000)
+    minimum_documents: int = Field(ge=1, le=20)
+
+
+class ResearchPlan(Record):
+    facets: list[SearchFacet] = Field(min_length=1, max_length=8)
+    minimum_documents: int = Field(ge=2, le=20)
+
+
+class EvidenceNote(Record):
+    facet_ids: list[str] = Field(min_length=1, max_length=8)
+    claim: str = Field(min_length=1, max_length=1200)
+    citation: Citation
+    method: str = Field(max_length=800)
+    limitations: str = Field(max_length=1200)
+
+
+class DocumentBrief(Record):
+    finished: bool
+    notes: list[EvidenceNote] = Field(max_length=20)
+    gaps: list[str] = Field(max_length=20)
+
+
+class FacetCoverage(Record):
+    facet_id: str
+    status: Literal["covered", "partial", "missing"]
+    evidence_ids: list[str]
+    explanation: str = Field(min_length=1, max_length=1500)
+
+
+class CoverageAssessment(Record):
+    facets: list[FacetCoverage]
+
+
+class DocumentCoverage(DocumentIdentity):
+    selected: bool
+    matched_facets: list[str]
+    status: Literal["not_selected", "pending", "investigated", "budget_exhausted", "no_hits"]
+    notes: list[EvidenceNote] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+    opened_pages: list[int] = Field(default_factory=list)
+
+
+class BroadReport(Record):
+    plan: ResearchPlan | None = None
+    documents: list[DocumentCoverage] = Field(default_factory=list)
+    coverage: list[FacetCoverage] = Field(default_factory=list)
+    discovery_queries_completed: int = 0
+    documents_cited: int = 0
+    scope: str = (
+        "Comparison of selected retrieved documents, not an exhaustive corpus review. "
+        "Catalog overviews and model-written notes are navigation/interpretation, not source truth."
+    )
+
+
 class InvestigationResult(Record):
     status: Literal["answered", "insufficient_context", "budget_exhausted"]
     question: str
@@ -152,3 +210,4 @@ class InvestigationResult(Record):
     searches: int
     stop_reason: str
     usage: UsageReport | None = None
+    broad: BroadReport | None = None

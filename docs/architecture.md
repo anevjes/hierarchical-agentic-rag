@@ -12,6 +12,48 @@ portal project must be connected to that Search service to discover/use its
 knowledge bases through the portal; creating the data-plane objects does not
 automatically create that project connection.
 
+### Broad mode: discovery and evidence
+
+The original focused flow remains the default. `ask --broad` adds an optional
+document-level catalog and a bounded cross-document investigation:
+
+```text
+Indexed page Markdown -- catalog backfill --> Document catalog (one row/document)
+New ingest --catalog -----------------------> same catalog after chunk publication
+
+Question -> MAF facet planner
+         -> catalog semantic search + existing IQ hybrid retrieval per facet
+         -> document deduplication, rank fusion and facet-diverse selection
+         -> bounded concurrent document workers (isolated MAF sessions/budgets)
+            -> document/revision-filtered hybrid page lookup
+            -> physical-page opens and local investigation loops
+            -> compact claims + exact quotes + methods/limitations
+         -> cross-document coverage assessment and code-enforced coverage gate
+         -> quote-grounded comparison writer
+         -> full-page quote/citation validation + coverage/usage report
+```
+
+Catalog overviews are bounded extractive navigation samples and Markdown section
+maps, not generated facts. Backfill reads existing immutable Markdown and checks
+source/manifest provenance; no CU or embedding request is needed. The catalog
+index is not a second generative knowledge base: it complements the existing IQ
+source/base. Narrow document searches use the Azure Search SDK's hybrid query,
+with document ID and revision prefilters and the existing query vectorizer.
+
+**Intentional gate difference:** focused mode requires every selected hit page
+to be opened. Broad mode treats retrieval as discovery, allowing irrelevant
+candidate pages to remain unopened. Only opened, exact-quote evidence can support
+the final answer. Independent document-count requirements apply overall and per
+facet, and unselected/uncompleted documents remain visible. Full page bodies stay
+in the evidence ledger/result; the final writer receives compact notes and source
+metadata instead of every page.
+
+Global worker budgets are reserved before concurrency, not optimistically checked
+after spending. Concurrency never shares the mutable `Investigation` object.
+Coverage assessment cannot certify corpus completeness or semantic truth: it is
+a model judgement constrained by verified source IDs/quotes and code checks.
+See [setup](setup.md#broad-cross-document-workflow) for limits and migration.
+
 Each extraction gets a new revision. The original Blob ETag is checked before
 download and again before publishing. Each chunk stays inside one physical page.
 Ingestion uses the CU async SDK with `prebuilt-documentSearch`, inline PDF bytes,
