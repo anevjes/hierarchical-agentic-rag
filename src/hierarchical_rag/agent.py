@@ -7,6 +7,7 @@ from agent_framework import Agent, AgentResponse, SupportsChatGetResponse
 
 from .investigation import BudgetExceeded, Investigation
 from .models import Answer, Assessment, InvestigationResult
+from .usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,38 @@ async def investigate(
     question: str,
     state: Investigation,
     client: SupportsChatGetResponse[Any],
+    *,
+    usage: UsageTracker | None = None,
+) -> InvestigationResult:
+    own_usage = usage is None
+    usage = usage or UsageTracker("ask", state.settings.token_rates_usd_per_million)
+    status = "failed"
+    try:
+        result = await _investigate(question, state, client, usage)
+        status = result.status
+        return result
+    finally:
+        usage.counters.update(
+            tool_calls=state.tool_calls,
+            iq_searches=state.searches,
+            selected_chunks=len(state.hits),
+            documents_opened=len(state.documents),
+            pages_opened=len(state.evidence),
+            pages_cached=len(state.page_cache),
+            evidence_characters=state.context_chars,
+        )
+        report = usage.report(status)
+        if own_usage:
+            usage.log_summary(report)
+        if status != "failed":
+            result.usage = report
+
+
+async def _investigate(
+    question: str,
+    state: Investigation,
+    client: SupportsChatGetResponse[Any],
+    usage: UsageTracker,
 ) -> InvestigationResult:
     if not question.strip():
         raise ValueError("Question must not be empty")
@@ -94,11 +127,13 @@ async def investigate(
             assessment = None
             for _ in range(state.settings.max_tool_calls):
                 before = (len(state.hits), len(state.evidence), state.searches)
-                response = await investigator.run(
-                    prompt,
-                    session=session,
-                    options={"response_format": Assessment},
-                )
+                with usage.operation("investigator", state.settings.model_deployment) as event:
+                    response = await investigator.run(
+                        prompt,
+                        session=session,
+                        options={"response_format": Assessment},
+                    )
+                    event.record(response.usage_details)
                 if state.budget_reason:
                     return stopped(state.budget_reason)
                 raise_tool_errors(response)
@@ -137,15 +172,17 @@ async def investigate(
                 default_options={"store": False},
             )
             approved = [state.evidence[eid] for eid in dict.fromkeys(assessment.evidence_ids)]
-            response = await writer.run(
-                json.dumps(
-                    {
-                        "original_question": question,
-                        "approved_evidence": [page.model_dump() for page in approved],
-                    }
-                ),
-                options={"response_format": Answer},
-            )
+            with usage.operation("writer", state.settings.model_deployment) as event:
+                response = await writer.run(
+                    json.dumps(
+                        {
+                            "original_question": question,
+                            "approved_evidence": [page.model_dump() for page in approved],
+                        }
+                    ),
+                    options={"response_format": Answer},
+                )
+                event.record(response.usage_details)
             raise_tool_errors(response)
             answer = Answer.model_validate_json(response.text)
             state.validate_answer(answer, assessment.evidence_ids)

@@ -18,7 +18,7 @@ from hierarchical_rag.models import Answer, Assessment, Citation
 class ScriptedClient(FunctionInvocationLayer, BaseChatClient):
     """Exercise real MAF tool invocation without a network/model dependency."""
 
-    def __init__(self, responses):
+    def __init__(self, responses, usage_details=None):
         super().__init__(
             function_invocation_configuration={
                 "max_iterations": 20,
@@ -28,13 +28,17 @@ class ScriptedClient(FunctionInvocationLayer, BaseChatClient):
         )
         self.responses = deque(responses)
         self.requests = []
+        self.usage_details = usage_details
 
     async def _inner_get_response(self, *, messages, stream, options, **kwargs):
         assert not stream
         self.requests.append((messages, options))
         if not self.responses:
             raise AssertionError("Unexpected extra model call")
-        return ChatResponse(messages=[Message("assistant", [self.responses.popleft()])])
+        return ChatResponse(
+            messages=[Message("assistant", [self.responses.popleft()])],
+            usage_details=self.usage_details,
+        )
 
 
 def tool_call(name, **arguments):
@@ -74,7 +78,8 @@ async def test_real_maf_loop_expands_then_assesses_then_writes(settings, backend
             tool_call("open_pages", document_id=docid, start_page=2, end_page=2),
             assessment([p1, p2]),
             answer(p1),
-        ]
+        ],
+        usage_details={"input_token_count": 100, "output_token_count": 20},
     )
     result = await investigate(
         "What warranty and exceptions apply?", Investigation(settings, backend), client
@@ -89,6 +94,8 @@ async def test_real_maf_loop_expands_then_assesses_then_writes(settings, backend
         message for messages, _ in client.requests for message in messages if message.role == "tool"
     ]
     assert tool_messages
+    assert [event.total_tokens for event in result.usage.events] == [240, 240, 120]
+    assert result.usage.reported_tokens["total_tokens"] == 600
 
 
 async def test_premature_synthesis_is_blocked(settings, backend, document):

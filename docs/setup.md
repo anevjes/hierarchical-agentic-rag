@@ -155,6 +155,85 @@ skip previously ingested PDFs, or provide a continuation cursor.
 Use `--blob "name.pdf"` for one exact file; combining `--blob` with `--top` is
 rejected before Azure calls.
 
+## Usage and cost reporting
+
+```powershell
+hrag ingest --blob "policies/claims.pdf" --usage-report .\claims-usage.json
+hrag ingest --prefix "policies/" --top 20 --usage-report .\batch-usage.json
+hrag ask "Which exclusions affect emergency coverage?" --usage-report .\ask-usage.json
+```
+
+The optional report path must not exist and its parent directory must exist.
+It is reserved before Azure calls, avoiding accidental overwrites. Without the
+option, ingestion still prints the summary JSON to stdout and `ask` includes it
+in the `usage` field of the answer JSON. Progress and summaries go to stderr.
+Separate report files contain usage metadata only, not retrieved text or prompts;
+they do include source blob names and deployment names. Protect them accordingly.
+
+Reports contain a run ID, UTC start/end, elapsed seconds, outcome, counters,
+per-operation timing/status/token events, applied rates and cost limitations.
+The ingestion period covers client setup/preflight through all selected PDFs and
+client cleanup. Stats accumulate across documents and completed batches even if
+a later document fails. Ask retains its `answered`, `insufficient_context` or
+`budget_exhausted` outcome. Exceptions produce `failed` reports before propagating
+with a nonzero exit code. A process kill or machine shutdown cannot produce a
+final report. Report write failures are logged and fail successful commands;
+they do not replace an already-active service exception.
+
+| Component | Measured here | Not measured here |
+|---|---|---|
+| Content Understanding | Analyze operations/durations, validated extracted physical pages, Markdown characters, figures | Internal model tokens, billable page meters |
+| Chunk embeddings | Each returned response's prompt/total tokens, batch durations, chunk counts | Hidden retry/server work without usage |
+| MAF investigator and writer | Returned input/output/total tokens, available cached/reasoning subsets, run durations | Usage from an aborted agent run without a final response |
+| IQ / Search | Retrieval operations/durations, index upload/delete counts, indexed/deleted chunks | Search-side query embeddings, semantic/capacity charges |
+| Blob | Downloaded source/artifact bytes, successful artifact upload/download counts | Azure transaction meters, source-property checks, retries, storage/egress charges |
+| Investigation | Tool/search attempts, unique selected chunks/documents, opened/cached pages, evidence characters | Per-underlying-model-call timing within one MAF run |
+
+MAF aggregates the native tool loop's usage into each `Agent.run` response.
+We count that response **once**, then add subsequent assessment rounds and the
+writer. SDK retries are not additional visible events. Interrupted runs can
+have billed calls without returned counters, even if earlier model calls within
+that same native loop completed. Successful prior runs/batches retain their usage.
+An embedding response's usage is retained before validating vectors or uploading
+to Search. Counters denote application operations, not invoice quantities.
+Omitted operation counters mean that stage was not reached.
+
+Configure optional prices using **actual deployment names** and your applicable
+USD per million token rates, for example:
+
+```dotenv
+# Illustrative numbers ONLY; replace names and values with your contracted prices.
+HRAG_TOKEN_RATES_USD_PER_MILLION={"my-chat":{"input":1.0,"output":4.0,"cached_input":0.25},"my-embedding":{"input":0.1,"output":0}}
+```
+
+Rates must be finite and nonnegative. For a priced response:
+
+```text
+USD = ((input - cached) * input_rate + cached * cached_rate
+       + output * output_rate) / 1,000,000
+```
+
+Cached tokens are a subset of input; reasoning tokens are a subset of output.
+Neither is added again to total tokens or cost. If `cached_input` is omitted,
+all input tokens use the input rate (no assumed cache discount). If a discounted
+rate is configured but no cached-token count was returned, cost is unavailable
+for that event. `output` defaults to zero for embedding-only rate entries; always
+set it explicitly for chat deployments.
+
+`reported_tokens` sums only available counters, and may therefore be incomplete.
+`null` means no counter was returned, not zero consumption; an empty `events`
+list means no tracked operation was attempted. `estimated_token_cost_usd` is
+the sum of priceable events only, or `null` when none can be priced.
+`unpriced_events` identifies events omitted from that subtotal. Missing prices
+or usage do not prevent ingestion or answering. There are no built-in current
+Azure prices or automatic billing queries.
+
+Use Azure Cost Management and the corresponding resource/deployment meters to
+reconcile full costs, especially CU processing and Search-hosted vectorization.
+This report does not include CU page meters, Search capacity/semantic charges,
+Blob/storage/network costs, taxes, or unseen billed retries. It must not be used
+as a complete invoice or a hard spend limit.
+
 ## Hybrid vector retrieval and migration
 
 Configure one embedding endpoint/deployment/model/dimension combination for both

@@ -19,6 +19,7 @@ from azure.storage.blob.aio import ContainerClient
 from .config import Settings
 from .ingestion import document_id, manifest_name, markdown_name, page_name, source_url, span_text
 from .models import Chunk, Document, Page, StoredDocument, stored_document_adapter
+from .usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 
@@ -102,17 +103,21 @@ class AzureEvidenceBackend:
         knowledge_base: KnowledgeBaseRetrievalClient,
         source: ContainerClient,
         pages: ContainerClient,
+        *,
+        usage: UsageTracker | None = None,
     ) -> None:
         self.settings = settings
         self.knowledge_base = knowledge_base
         self.source = source
         self.pages = pages
+        self.usage = usage or UsageTracker("ask", settings.token_rates_usd_per_million)
 
     async def retrieve(self, query: str) -> list[Chunk]:
-        response = await self.knowledge_base.retrieve(
-            retrieval_request(query, self.settings.knowledge_source_name),
-            raw_response_hook=reject_partial_retrieval,
-        )
+        with self.usage.operation("iq_retrieval"):
+            response = await self.knowledge_base.retrieve(
+                retrieval_request(query, self.settings.knowledge_source_name),
+                raw_response_hook=reject_partial_retrieval,
+            )
         return parse_references(response)
 
     async def load_document(self, hit: Chunk) -> StoredDocument:
@@ -130,7 +135,10 @@ class AzureEvidenceBackend:
         )
         manifest = self.pages.get_blob_client(manifest_name(hit.document_id, hit.revision))
         download = await manifest.download_blob()
-        doc = stored_document_adapter.validate_json(await download.readall())
+        data = await download.readall()
+        self.usage.increment("artifact_blobs_downloaded")
+        self.usage.increment("artifact_bytes_downloaded", len(data))
+        doc = stored_document_adapter.validate_json(data)
         validate_provenance(doc, hit)
         if isinstance(doc, Document):
             logger.warning(
@@ -156,7 +164,10 @@ class AzureEvidenceBackend:
 
     async def _markdown(self, name: str, sha256: str, content_chars: int) -> str:
         download = await self.pages.get_blob_client(name).download_blob()
-        text = (await download.readall()).decode("utf-8")
+        data = await download.readall()
+        self.usage.increment("artifact_blobs_downloaded")
+        self.usage.increment("artifact_bytes_downloaded", len(data))
+        text = data.decode("utf-8")
         validate_page(text, sha256, content_chars)
         return text
 

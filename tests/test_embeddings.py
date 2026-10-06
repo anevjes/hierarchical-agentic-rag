@@ -11,6 +11,7 @@ from hierarchical_rag.config import Settings
 from hierarchical_rag.embeddings import EMBEDDING_API_VERSION, embed_chunks
 from hierarchical_rag.ingestion import ingest_pdf
 from hierarchical_rag.provision import index_definition, provision, validate_embedding_index
+from hierarchical_rag.usage import UsageTracker
 
 
 def response(indices, vectors):
@@ -35,7 +36,8 @@ async def test_embeddings_preserve_response_alignment_and_batch_limit(settings, 
         return response(indices, [[float(i + 1), 0.2, 0.3] for i in indices])
 
     client = Mock(embeddings=Mock(create=AsyncMock(side_effect=create)))
-    vectors = await embed_chunks([hit] * 17, settings, client)
+    usage = UsageTracker("ingest")
+    vectors = await embed_chunks([hit] * 17, settings, client, usage=usage)
     assert len(vectors) == 17
     assert vectors[0] == vectors[16] == [1.0, 0.2, 0.3]
     assert vectors[15] == [16.0, 0.2, 0.3]
@@ -44,6 +46,9 @@ async def test_embeddings_preserve_response_alignment_and_batch_limit(settings, 
     assert calls[0]["dimensions"] == 3
     assert calls[0]["encoding_format"] == "float"
     assert calls[0]["model"] == settings.embedding_deployment
+    assert usage.report("completed").reported_tokens["input_tokens"] == 8
+    assert usage.counters["chunks_embedded"] == 17
+    assert len(usage.events) == 2
 
 
 @pytest.mark.parametrize(
@@ -61,8 +66,10 @@ async def test_embeddings_preserve_response_alignment_and_batch_limit(settings, 
 async def test_invalid_vectors_fail_explicitly(settings, hit, indices, vectors):
     settings.embedding_dimensions = 3
     client = Mock(embeddings=Mock(create=AsyncMock(return_value=response(indices, vectors))))
+    usage = UsageTracker("ingest")
     with pytest.raises(ValueError, match="Embedding response"):
-        await embed_chunks([hit], settings, client)
+        await embed_chunks([hit], settings, client, usage=usage)
+    assert usage.report("failed").reported_tokens["input_tokens"] == 4
 
 
 async def test_embedding_failure_preserves_old_index(settings):

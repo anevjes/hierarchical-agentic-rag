@@ -4,6 +4,8 @@ from urllib.parse import urlsplit
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .usage import TokenRates
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="HRAG_", extra="ignore")
@@ -39,6 +41,7 @@ class Settings(BaseSettings):
     max_pages: int = Field(default=24, ge=1, le=200)
     max_context_chars: int = Field(default=100_000, ge=1000)
     query_timeout_seconds: int = Field(default=180, ge=1)
+    token_rates_usd_per_million: dict[str, TokenRates] = Field(default_factory=dict)
 
     @field_validator(
         "storage_account_url",

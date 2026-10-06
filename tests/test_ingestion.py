@@ -68,6 +68,8 @@ def ingestion_clients(text="First page. Second page.", split=12):
     )
     async def embed(**kwargs):
         return SimpleNamespace(
+            usage=SimpleNamespace(prompt_tokens=len(kwargs["input"]) * 10,
+                                  total_tokens=len(kwargs["input"]) * 10),
             data=[
                 SimpleNamespace(index=i, embedding=[0.1] * kwargs["dimensions"])
                 for i in range(len(kwargs["input"]))

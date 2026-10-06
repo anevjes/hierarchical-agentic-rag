@@ -2,6 +2,8 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
+from .usage import UsageReport
+
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -149,3 +151,4 @@ class InvestigationResult(Record):
     tool_calls: int
     searches: int
     stop_reason: str
+    usage: UsageReport | None = None

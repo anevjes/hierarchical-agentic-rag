@@ -1,8 +1,10 @@
 import argparse
 import asyncio
 import logging
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, ExitStack
+from pathlib import Path
 from time import perf_counter
+from typing import TextIO
 
 from agent_framework.foundry import FoundryChatClient
 from azure.ai.contentunderstanding.aio import ContentUnderstandingClient
@@ -19,14 +21,55 @@ from .config import Settings
 from .embeddings import EMBEDDING_API_VERSION
 from .ingestion import CONTENT_UNDERSTANDING_API_VERSION, ingest_pdf
 from .investigation import Investigation
+from .models import InvestigationResult
 from .provision import SEARCH_API_VERSION, provision, validate_embedding_index
 from .retrieval import AzureEvidenceBackend
+from .usage import UsageReport, UsageTracker
 
 logger = logging.getLogger(__name__)
 
 
+def write_usage_report(stream: TextIO, report: UsageReport) -> None:
+    stream.write(report.model_dump_json(indent=2) + "\n")
+    stream.flush()
+
+
 async def run(args: argparse.Namespace) -> None:
     settings = Settings()  # type: ignore[call-arg]  # Values are loaded from the environment.
+    usage = UsageTracker(args.command, settings.token_rates_usd_per_million)
+    with ExitStack() as files:
+        report_path = getattr(args, "usage_report", None)
+        report_file = (
+            files.enter_context(
+                await asyncio.to_thread(Path(report_path).open, "x", encoding="utf-8")
+            )
+            if report_path is not None else None
+        )
+        status = "failed"
+        try:
+            result = await _run(args, settings, usage)
+            status = result.status if result is not None else "completed"
+        finally:
+            report = usage.report(status)
+            if args.command in ("ingest", "ask"):
+                usage.log_summary(report)
+            if report_file is not None:
+                try:
+                    await asyncio.to_thread(write_usage_report, report_file, report)
+                except OSError:
+                    logger.exception("Could not write usage report to %s", report_path)
+                    if status != "failed":
+                        raise
+        if result is not None:
+            result.usage = report
+            print(result.model_dump_json(indent=2))
+        elif args.command == "ingest":
+            print(report.model_dump_json(indent=2))
+
+
+async def _run(
+    args: argparse.Namespace, settings: Settings, usage: UsageTracker
+) -> InvestigationResult | None:
     async with AsyncExitStack() as stack:
         credential = await stack.enter_async_context(DefaultAzureCredential())
         storage = await stack.enter_async_context(
@@ -86,7 +129,8 @@ async def run(args: argparse.Namespace) -> None:
             )
             if args.blob:
                 total_chunks = await ingest_pdf(
-                    args.blob, settings, source, pages, intelligence, search, embeddings
+                    args.blob, settings, source, pages, intelligence, search, embeddings,
+                    usage=usage,
                 )
                 count = 1
             else:
@@ -102,7 +146,8 @@ async def run(args: argparse.Namespace) -> None:
                         continue
                     logger.info("Processing PDF %d: %s", count + 1, blob.name)
                     total_chunks += await ingest_pdf(
-                        blob.name, settings, source, pages, intelligence, search, embeddings
+                        blob.name, settings, source, pages, intelligence, search, embeddings,
+                        usage=usage,
                     )
                     count += 1
                     if args.top is not None and count >= args.top:
@@ -140,11 +185,13 @@ async def run(args: argparse.Namespace) -> None:
             )
             stack.push_async_callback(client.project_client.close)
             stack.push_async_callback(client.client.close)
-            backend = AzureEvidenceBackend(settings, kb, source, pages)
-            result = await investigate(args.question, Investigation(settings, backend), client)
-            print(result.model_dump_json(indent=2))
+            backend = AzureEvidenceBackend(settings, kb, source, pages, usage=usage)
+            return await investigate(
+                args.question, Investigation(settings, backend), client, usage=usage
+            )
         else:
             raise ValueError(f"Unknown command: {args.command}")
+    return None
 
 
 def main() -> None:
@@ -164,6 +211,13 @@ def main() -> None:
     )
     ask = commands.add_parser("ask", help="Investigate, open pages, then answer with citations")
     ask.add_argument("question")
+    for command in (ingest, ask):
+        command.add_argument(
+            "--usage-report",
+            type=Path,
+            metavar="PATH",
+            help="Write a usage/cost JSON report, including on failure; path must not exist",
+        )
     args = parser.parse_args()
     if args.command == "ingest":
         if args.top is not None and args.top <= 0:

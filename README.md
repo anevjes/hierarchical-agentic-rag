@@ -192,6 +192,35 @@ citations, retrieved chunks, full opened evidence, document links, and usage cou
 Service, authentication, malformed-reference, and citation-validation errors fail
 explicitly with a nonzero exit code.
 
+### Usage and cost reports
+
+Both commands log elapsed time, operation statistics and **provider-reported**
+tokens. Ingestion prints a JSON run summary; `ask` includes the same report under
+`usage` in its existing result JSON. To save a separate report, including when a
+later operation fails:
+
+```powershell
+hrag ingest --top 20 --usage-report .\ingest-usage.json
+hrag ask "What conditions apply to the warranty?" --usage-report .\ask-usage.json
+```
+
+Use a new filename each run; existing report files are never overwritten.
+Reports include embedding batches, CU operations, investigator/writer runs,
+input/output tokens and available cached/reasoning subsets. Ingest counters cover
+documents, bytes, pages, figures, chunks and artifact uploads. Ask counters cover
+searches, tools, opened/cached pages, evidence characters and artifact downloads.
+Usage logs/reports exclude document text, questions and answers; ingestion event
+metadata does include blob names, so keep reports private.
+
+Optional `HRAG_TOKEN_RATES_USD_PER_MILLION` maps deployment names to your input,
+output and optional cached-input rates. No prices are hardcoded. The resulting
+USD estimate is a **partial token-only subtotal**, not the full Azure bill:
+CU's internal LLM tokens and Search's query-vectorizer tokens are not exposed by
+these responses, and page/service/storage charges are excluded. Unknown usage or
+cost is `null`, never an invented zero. See
+[usage and cost configuration](docs/setup.md#usage-and-cost-reporting) for rates,
+failure accounting and coverage details.
+
 ## Azure prerequisites
 
 See [setup and operations](docs/setup.md) for resources, RBAC, model capabilities,

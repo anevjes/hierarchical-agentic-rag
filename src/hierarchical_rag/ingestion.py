@@ -28,6 +28,7 @@ from .models import (
     Page,
     PageReference,
 )
+from .usage import UsageTracker
 
 logger = logging.getLogger(__name__)
 CONTENT_UNDERSTANDING_API_VERSION = "2025-11-01"
@@ -190,7 +191,11 @@ async def ingest_pdf(
     intelligence: ContentUnderstandingClient,
     search: SearchClient,
     embeddings: AsyncAzureOpenAI,
+    *,
+    usage: UsageTracker | None = None,
 ) -> int:
+    usage = usage or UsageTracker("ingest", settings.token_rates_usd_per_million)
+    usage.increment("documents_started")
     started = perf_counter()
     logger.info("Ingesting %s: reading source blob properties", blob_name)
     if not blob_name.lower().endswith(".pdf"):
@@ -206,6 +211,7 @@ async def ingest_pdf(
         match_condition=MatchConditions.IfNotModified,
     )
     data = await download.readall()
+    usage.increment("source_bytes_downloaded", len(data))
     if b"%PDF-" not in data[:1024]:
         raise ValueError(f"Blob is not a PDF: {blob_name}")
     logger.info(
@@ -218,19 +224,23 @@ async def ingest_pdf(
         settings.content_understanding_analyzer,
         settings.content_understanding_processing_location,
     )
-    poller = await intelligence.begin_analyze(
-        settings.content_understanding_analyzer,
-        inputs=[AnalysisInput(data=data, mime_type="application/pdf")],
-        model_deployments=settings.content_understanding_model_deployments or None,
-        processing_location=settings.content_understanding_processing_location,
-    )
-    logger.info(
-        "Analysis submitted for %s; waiting for Content Understanding (may take several minutes)",
-        blob_name,
-    )
-    logger.debug("Content Understanding operation for %s: %s", blob_name, poller.operation_id)
-    result = await poller.result()
+    with usage.operation("content_understanding", document=blob_name):
+        poller = await intelligence.begin_analyze(
+            settings.content_understanding_analyzer,
+            inputs=[AnalysisInput(data=data, mime_type="application/pdf")],
+            model_deployments=settings.content_understanding_model_deployments or None,
+            processing_location=settings.content_understanding_processing_location,
+        )
+        logger.info(
+            "Analysis submitted for %s; waiting for Content Understanding "
+            "(may take several minutes)",
+            blob_name,
+        )
+        logger.debug("Content Understanding operation for %s: %s", blob_name, poller.operation_id)
+        result = await poller.result()
     content, extracted, page_spans = extract_pages(result, settings)
+    usage.increment("pages_extracted", len(extracted))
+    usage.increment("markdown_characters", len(content))
     logger.info(
         "Analysis validated for %s: %d pages, %d Markdown characters in %.1fs",
         blob_name,
@@ -257,6 +267,7 @@ async def ingest_pdf(
     )
     if not chunks:
         raise ValueError("No searchable body content remains after chunk filtering")
+    usage.increment("chunks_prepared", len(chunks))
     logger.info(
         "Prepared %d structure-aware chunks for %s; stored page Markdown remains unchanged",
         len(chunks),
@@ -272,6 +283,7 @@ async def ingest_pdf(
         CONTENT_UNDERSTANDING_API_VERSION,
     )
     figures_data = figures.model_dump_json(indent=2).encode("utf-8")
+    usage.increment("figures_extracted", len(figures.figures))
     figures_reference = ArtifactReference(
         blob=f"{doc.document_id}/{doc.revision}/figures.json",
         sha256=hashlib.sha256(figures_data).hexdigest(),
@@ -308,6 +320,7 @@ async def ingest_pdf(
             overwrite=False,
             content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
         )
+        usage.increment("artifact_blobs_uploaded")
         logger.debug(
             "Uploaded page %d/%d for %s: %d characters",
             extracted_page.number,
@@ -329,6 +342,7 @@ async def ingest_pdf(
         content_settings=ContentSettings(content_type="text/markdown; charset=utf-8"),
     )
     logger.debug("Uploaded full-document Markdown for %s", blob_name)
+    usage.increment("artifact_blobs_uploaded")
     await pages.upload_blob(
         name=manifest.extraction.analysis_blob,
         data=analysis,
@@ -336,6 +350,7 @@ async def ingest_pdf(
         content_settings=ContentSettings(content_type="application/json"),
     )
     logger.debug("Uploaded raw analysis JSON for %s", blob_name)
+    usage.increment("artifact_blobs_uploaded")
     await pages.upload_blob(
         name=figures_reference.blob,
         data=figures_data,
@@ -343,6 +358,7 @@ async def ingest_pdf(
         content_settings=ContentSettings(content_type="application/json"),
     )
     logger.debug("Uploaded figures JSON for %s", blob_name)
+    usage.increment("artifact_blobs_uploaded")
     # Publish the manifest last so it never points to Markdown that has not been uploaded.
     await pages.upload_blob(
         name=manifest_name(doc.document_id, doc.revision),
@@ -350,6 +366,7 @@ async def ingest_pdf(
         overwrite=False,
         content_settings=ContentSettings(content_type="application/json"),
     )
+    usage.increment("artifact_blobs_uploaded")
     logger.info(
         "Artifacts published for %s: %d blobs in %.1fs",
         blob_name,
@@ -374,7 +391,8 @@ async def ingest_pdf(
             settings.embedding_deployment,
             settings.embedding_dimensions,
         )
-        vectors = await embed_chunks(batch, settings, embeddings)
+        vectors = await embed_chunks(batch, settings, embeddings, usage=usage)
+        usage.increment("index_upload_requests")
         results = await search.upload_documents(
             documents=[
                 {**chunk.model_dump(), VECTOR_FIELD: vector}
@@ -382,6 +400,7 @@ async def ingest_pdf(
             ],
         )
         failures = [r for r in results if not r.succeeded]
+        usage.increment("chunks_indexed", sum(r.succeeded for r in results))
         if failures:
             logger.error(
                 "Index batch failed for %s: %d failed chunks; stale cleanup will not run",
@@ -411,7 +430,9 @@ async def ingest_pdf(
     stale = [{"id": row["id"]} async for row in old]
     logger.info("Found %d stale indexed chunks for %s", len(stale), blob_name)
     for start in range(0, len(stale), 100):
+        usage.increment("index_delete_requests")
         deleted = await search.delete_documents(documents=stale[start : start + 100])
+        usage.increment("stale_chunks_deleted", sum(item.succeeded for item in deleted))
         if any(not item.succeeded for item in deleted):
             logger.error("Stale-chunk removal failed for %s; new revision is indexed", blob_name)
             raise RuntimeError("New revision indexed but stale-chunk removal failed; rerun ingest")
@@ -430,4 +451,5 @@ async def ingest_pdf(
         doc.revision,
         perf_counter() - started,
     )
+    usage.increment("documents_completed")
     return len(chunks)
