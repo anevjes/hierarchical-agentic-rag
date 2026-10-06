@@ -7,9 +7,17 @@ from agent_framework import BaseChatClient, ChatResponse, Content, FunctionInvoc
 from conftest import MemoryBackend
 from test_agent import tool_call
 
-from hierarchical_rag.broad import investigate_broad, select_documents
+from hierarchical_rag.broad import (
+    CoverageValidationError,
+    EvidenceNoteValidationError,
+    coverage_errors,
+    investigate_broad,
+    select_documents,
+    validate_notes,
+)
 from hierarchical_rag.catalog import catalog_document
 from hierarchical_rag.ingestion import chunks_for
+from hierarchical_rag.investigation import Investigation
 from hierarchical_rag.models import (
     Answer,
     Citation,
@@ -86,12 +94,23 @@ class BroadClient(FunctionInvocationLayer, BaseChatClient):
         self.unopened = False
         self.partial = False
         self.bad_coverage = False
+        self.coverage_calls = 0
+        self.coverage_repair_succeeds = False
+        self.coverage_repair_partial = False
+        self.coverage_repair_slow = False
+        self.coverage_payloads = []
         self.one_citation = False
         self.writer_extra = False
         self.slow = False
         self.needed_page = 1
         self.expand_two_pages = False
         self.search_first = False
+        self.repair_succeeds = False
+        self.repair_calls = {}
+        self.repair_requests = []
+        self.repair_drops_notes = False
+        self.repair_continue = False
+        self.repair_slow = False
 
     async def _inner_get_response(self, *, messages, stream, options, **kwargs):
         assert not stream
@@ -99,6 +118,25 @@ class BroadClient(FunctionInvocationLayer, BaseChatClient):
         self.requests.append((response_format, messages))
         if response_format is ResearchPlan:
             content = Content.from_text(self.plan.model_dump_json())
+        elif response_format is DocumentBrief and any(
+            message.role == "user" and '"invalid_brief"' in message.text for message in messages
+        ):
+            payload = json.loads(
+                next(message.text for message in messages if message.role == "user")
+            )
+            docid = payload["document_id"]
+            self.repair_calls[docid] = self.repair_calls.get(docid, 0) + 1
+            self.repair_requests.append((payload, options))
+            if self.repair_slow:
+                await asyncio.sleep(10)
+            brief = DocumentBrief.model_validate(payload["invalid_brief"])
+            if self.repair_succeeds:
+                brief.notes = [self.note(docid)]
+                brief.finished = not self.repair_continue
+            if self.repair_drops_notes:
+                brief.notes = []
+                brief.gaps = ["No exact quote supports the requested claim"]
+            content = Content.from_text(brief.model_dump_json())
         elif response_format is DocumentBrief:
             prompt = next(
                 json.loads(message.text)
@@ -127,15 +165,26 @@ class BroadClient(FunctionInvocationLayer, BaseChatClient):
                     DocumentBrief(finished=True, notes=[note], gaps=[]).model_dump_json()
                 )
         elif response_format is CoverageAssessment:
+            self.coverage_calls += 1
+            self.coverage_payloads.append(json.loads(
+                next(message.text for message in messages if message.role == "user")
+            ))
+            if self.coverage_calls == 2 and self.coverage_repair_slow:
+                await asyncio.sleep(10)
+            invalid = self.bad_coverage and not (
+                self.coverage_calls == 2 and self.coverage_repair_succeeds
+            )
             content = Content.from_text(
                 CoverageAssessment(
                     facets=[
                         FacetCoverage(
                             facet_id="comparison",
-                            status="partial" if self.partial else "covered",
+                            status="partial" if self.partial or (
+                                self.coverage_calls == 2 and self.coverage_repair_partial
+                            ) else "covered",
                             evidence_ids=(
                                 ["invented"]
-                                if self.bad_coverage
+                                if invalid
                                 else [
                                     self.note(key).citation.evidence_id for key in self.worker_calls
                                 ]
@@ -225,6 +274,243 @@ async def test_workers_can_search_again_without_loading_full_documents(settings,
     assert result.tool_calls == 6
     assert backend.full_downloads == 0
     assert result.usage.reported_tokens["total_tokens"] == 1080
+
+
+async def test_invalid_quotes_get_one_tool_free_repair_then_strict_revalidation(
+    settings, broad_fixture
+):
+    backend, client = broad_fixture
+    client.forged_quote = True
+    client.repair_succeeds = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "answered"
+    assert list(client.repair_calls.values()) == [1, 1]
+    assert result.usage.reported_tokens["total_tokens"] == 1080
+    assert result.usage.counters["evidence_repairs_attempted"] == 2
+    assert result.usage.counters["evidence_repairs_completed"] == 2
+    assert all(doc.evidence_repairs == 1 for doc in result.broad.documents)
+    assert all(doc.note_validation_errors for doc in result.broad.documents)
+    for payload, options in client.repair_requests:
+        assert not options.get("tools")
+        assert len(payload["opened_pages"]) == 1
+        assert payload["max_quote_chars"] == settings.broad_quote_chars
+        assert payload["opened_pages"][0]["document_id"] == payload["document_id"]
+    assert all(
+        citation.quote in next(
+            page.text for page in result.evidence if page.evidence_id == citation.evidence_id
+        ) for citation in result.answer.citations
+    )
+
+
+async def test_unsuccessful_repair_remains_fatal_and_usage_is_retained(
+    settings, broad_fixture, caplog
+):
+    backend, client = broad_fixture
+    client.forged_quote = True
+    usage = UsageTracker("ask")
+    with pytest.raises(ExceptionGroup) as error:
+        await investigate_broad("Compare", settings, backend, client, usage=usage)
+    assert isinstance(error.value.exceptions[0], EvidenceNoteValidationError)
+    assert "not an exact substring" in str(error.value.exceptions[0])
+    assert all(count == 1 for count in client.repair_calls.values())
+    assert "Invalid evidence notes" in caplog.text
+    assert "Invented evidence" not in caplog.text
+    assert usage.counters["evidence_repairs_attempted"] >= 1
+    assert usage.counters.get("evidence_repairs_completed", 0) == 0
+    assert any(event.stage == "document_worker_repair" for event in usage.events)
+    assert not any(format_ is Answer for format_, _ in client.requests)
+
+
+async def test_repair_cannot_turn_dropped_notes_into_sufficient_evidence(settings, broad_fixture):
+    backend, client = broad_fixture
+    client.forged_quote = True
+    client.repair_drops_notes = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "insufficient_context"
+    assert result.answer is None
+    assert all(doc.notes == [] and doc.gaps for doc in result.broad.documents)
+    assert not any(format_ is Answer for format_, _ in client.requests)
+
+
+@pytest.mark.parametrize("problem,diagnostic", [
+    ("unopened", "unknown or unopened page"),
+    ("mismatch", "not an exact substring"),
+    ("length", "exceeds limit"),
+    ("blank", "whitespace-only"),
+    ("facet", "unknown research facet"),
+    ("count", "count exceeds limit"),
+])
+async def test_note_validation_identifies_exact_problem(
+    settings, broad_fixture, problem, diagnostic
+):
+    backend, client = broad_fixture
+    docid = next(iter(backend.documents))
+    state = Investigation(settings, backend)
+    await state.search_knowledge_base("warranty")
+    await state.open_pages(docid, 1, 1)
+    note = client.note(docid)
+    brief = DocumentBrief(finished=True, notes=[note], gaps=[])
+    if problem == "unopened":
+        note.citation.evidence_id = "unopened"
+    elif problem == "mismatch":
+        note.citation.quote = "PARAPHRASED PRIVATE TEXT"
+    elif problem == "length":
+        settings.broad_quote_chars = len(note.citation.quote) - 1
+    elif problem == "blank":
+        note.citation.quote = " "
+    elif problem == "facet":
+        note.facet_ids = ["invented"]
+    elif problem == "count":
+        brief.notes = [note] * (settings.broad_max_evidence_records + 1)
+    with pytest.raises(EvidenceNoteValidationError, match=diagnostic) as error:
+        validate_notes(brief, state, client.plan, settings)
+    assert error.value.errors
+    assert "PARAPHRASED PRIVATE TEXT" not in str(error.value)
+
+
+async def test_valid_notes_need_no_repair(settings, broad_fixture):
+    backend, client = broad_fixture
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert not client.repair_calls
+    assert result.usage.counters.get("evidence_repairs_attempted", 0) == 0
+    assert all(doc.evidence_repairs == 0 for doc in result.broad.documents)
+
+
+async def test_coverage_assessor_repairs_invalid_facet_reference(settings, broad_fixture):
+    backend, client = broad_fixture
+    client.bad_coverage = True
+    client.coverage_repair_succeeds = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "answered"
+    assert client.coverage_calls == 2
+    allowed = client.coverage_payloads[0]["allowed_evidence_ids_by_facet"]
+    assert set(allowed["comparison"]) == {
+        client.note(key).citation.evidence_id for key in client.worker_calls
+    }
+    correction = client.coverage_payloads[1]
+    assert correction["allowed_evidence_ids_by_facet"] == allowed
+    assert correction["invalid_assessment"]["facets"][0]["evidence_ids"] == ["invented"]
+    assert correction["validation_errors"]
+    assert result.broad.coverage_repairs == 1
+    assert result.broad.coverage_validation_errors
+    assert result.usage.counters["coverage_repairs_attempted"] == 1
+    assert result.usage.counters["coverage_repairs_completed"] == 1
+    assert result.usage.reported_tokens["total_tokens"] == 960
+
+
+async def test_coverage_repair_still_requires_sufficient_evidence(settings, broad_fixture):
+    backend, client = broad_fixture
+    client.bad_coverage = True
+    client.coverage_repair_succeeds = True
+    client.coverage_repair_partial = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "insufficient_context"
+    assert result.answer is None
+    assert result.assessment.gaps
+    assert client.coverage_calls == 2
+    assert not any(format_ is Answer for format_, _ in client.requests)
+
+
+async def test_persistent_invalid_coverage_is_not_accepted(settings, broad_fixture, caplog):
+    backend, client = broad_fixture
+    client.bad_coverage = True
+    usage = UsageTracker("ask")
+    with pytest.raises(CoverageValidationError, match="not verified"):
+        await investigate_broad("Compare", settings, backend, client, usage=usage)
+    assert client.coverage_calls == 2
+    assert usage.counters["coverage_repairs_attempted"] == 1
+    assert usage.counters.get("coverage_repairs_completed", 0) == 0
+    assert usage.report("failed").reported_tokens["total_tokens"] == 840
+    assert "Repairing invalid coverage assessment" in caplog.text
+    assert "Warranty lasts" not in caplog.text
+    assert not any(format_ is Answer for format_, _ in client.requests)
+
+
+async def test_coverage_repair_uses_existing_global_deadline(settings, broad_fixture):
+    backend, client = broad_fixture
+    client.bad_coverage = True
+    client.coverage_repair_slow = True
+    settings.broad_timeout_seconds = 1
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "budget_exhausted"
+    assert result.answer is None
+    assert client.coverage_calls == 2
+    assert result.usage.counters["coverage_repairs_attempted"] == 1
+    assert result.usage.counters.get("coverage_repairs_completed", 0) == 0
+
+
+async def test_valid_partial_coverage_does_not_trigger_repair(settings, broad_fixture):
+    backend, client = broad_fixture
+    client.partial = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "insufficient_context"
+    assert client.coverage_calls == 1
+    assert result.broad.coverage_repairs == 0
+
+
+async def test_real_evidence_cannot_be_reassigned_to_a_different_facet(settings, broad_fixture):
+    backend, client = broad_fixture
+    state = Investigation(settings, backend)
+    await state.search_knowledge_base("warranty")
+    docid = next(iter(backend.documents))
+    await state.open_pages(docid, 1, 1)
+    note = client.note(docid)
+    client.plan.facets.append(SearchFacet(
+        facet_id="limitations", description="Limitations", query="limitations", minimum_documents=1
+    ))
+    assessment = CoverageAssessment(facets=[
+        FacetCoverage(
+            facet_id="comparison", status="covered",
+            evidence_ids=[note.citation.evidence_id], explanation="Terms",
+        ),
+        FacetCoverage(
+            facet_id="limitations", status="covered",
+            evidence_ids=[note.citation.evidence_id], explanation="Incorrectly reused quote",
+        ),
+    ])
+    with pytest.raises(CoverageValidationError, match=r"facets\[1\]"):
+        coverage_errors(assessment, client.plan, [note], {docid: state})
+    assert assessment.facets[0].status == "covered"  # Invalid responses are not partly mutated.
+
+
+@pytest.mark.parametrize("facet_ids", [[], ["comparison", "comparison"], ["unknown"]])
+def test_coverage_facet_set_must_match_plan(broad_fixture, facet_ids):
+    _, client = broad_fixture
+    assessment = CoverageAssessment(facets=[
+        FacetCoverage(
+            facet_id=key, status="missing", evidence_ids=[], explanation="No evidence"
+        ) for key in facet_ids
+    ])
+    with pytest.raises(CoverageValidationError, match="exactly once"):
+        coverage_errors(assessment, client.plan, [], {})
+
+
+async def test_repair_allowance_does_not_reset_between_assessment_rounds(
+    settings, broad_fixture
+):
+    backend, client = broad_fixture
+    client.forged_quote = True
+    client.repair_succeeds = True
+    client.repair_continue = True
+    with pytest.raises(ExceptionGroup) as error:
+        await investigate_broad("Compare", settings, backend, client)
+    assert isinstance(error.value.exceptions[0], EvidenceNoteValidationError)
+    assert all(count == 1 for count in client.repair_calls.values())
+    assert not any(format_ is Answer for format_, _ in client.requests)
+
+
+async def test_quote_repair_respects_global_deadline(settings, broad_fixture):
+    backend, client = broad_fixture
+    settings.broad_timeout_seconds = 1
+    client.forged_quote = True
+    client.repair_slow = True
+    result = await investigate_broad("Compare", settings, backend, client)
+    assert result.status == "budget_exhausted"
+    assert result.answer is None
+    assert all(count == 1 for count in client.repair_calls.values())
+    assert result.usage.counters["evidence_repairs_attempted"] == 2
+    assert result.usage.counters.get("evidence_repairs_completed", 0) == 0
+    assert result.usage.reported_tokens["total_tokens"] == 600
 
 
 async def test_unopened_discovery_pages_are_not_required(settings, broad_fixture):

@@ -1,4 +1,6 @@
 import argparse
+import io
+import json
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -6,7 +8,47 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 
 from hierarchical_rag import cli
+from hierarchical_rag.models import Answer, Citation, InvestigationResult
 from hierarchical_rag.provision import index_definition
+
+
+@pytest.mark.parametrize("command", ["ask", "ingest", "catalog"])
+@pytest.mark.parametrize("encoding", ["cp1252", "ascii", "utf-8"])
+async def test_cli_json_round_trips_unicode_on_redirected_stdout(
+    settings, monkeypatch, tmp_path, command, encoding
+):
+    text = "Threshold \u2264 5; \u5730\u8cea; \U0001f30d"
+    result = InvestigationResult(
+        status="answered", question=text,
+        answer=Answer(answer=text, citations=[Citation(evidence_id="p1", quote=text)]),
+        retrieved_chunks=[], evidence=[], tool_calls=0, searches=0, stop_reason=text,
+    )
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+
+    async def execute(args, settings, usage):
+        with usage.operation("test", document=text):
+            pass
+        return result if command == "ask" else None
+
+    monkeypatch.setattr(cli, "_run", execute)
+    report_path = tmp_path / "usage.json"
+    buffer = io.BytesIO()
+    with io.TextIOWrapper(buffer, encoding=encoding, errors="strict") as stdout:
+        with monkeypatch.context() as context:
+            context.setattr("sys.stdout", stdout)
+            await cli.run(argparse.Namespace(command=command, usage_report=report_path))
+            stdout.flush()
+        raw = buffer.getvalue()
+    assert raw.isascii()
+    output = json.loads(raw)
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["events"][0]["document"] == text
+    if command == "ask":
+        assert output["answer"]["answer"] == text
+        assert output["answer"]["citations"][0]["quote"] == text
+        assert output["usage"] == report
+    else:
+        assert output == report
 
 
 @pytest.mark.parametrize(

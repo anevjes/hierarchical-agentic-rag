@@ -1,0 +1,91 @@
+{
+  "run_id": "3d27a87c4dfd49559f337725e270546f",
+  "command": "catalog",
+  "status": "completed",
+  "started_at": "2026-10-06T06:52:13.304306Z",
+  "finished_at": "2026-10-06T06:52:31.214987Z",
+  "elapsed_seconds": 17.911,
+  "counters": {
+    "documents_started": 116,
+    "artifact_blobs_downloaded": 8,
+    "artifact_bytes_downloaded": 679993,
+    "catalog_documents_uploaded": 4,
+    "pages_catalogued": 193,
+    "documents_completed": 4,
+    "documents_skipped_unindexed": 112
+  },
+  "reported_tokens": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "cached_input_tokens": null,
+    "reasoning_output_tokens": null
+  },
+  "events": [
+    {
+      "stage": "catalog_upload",
+      "deployment": null,
+      "document": "101080_the-lord-howe-rise-newly-acquired-multi-channel-and-wide-ang.pdf",
+      "status": "completed",
+      "elapsed_seconds": 1.545,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    },
+    {
+      "stage": "catalog_upload",
+      "deployment": null,
+      "document": "103900_houtman-sub-basin-geophysical-modelling-study.pdf",
+      "status": "completed",
+      "elapsed_seconds": 0.086,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    },
+    {
+      "stage": "catalog_upload",
+      "deployment": null,
+      "document": "111363_estimating-cover-thickness-in-the-southern-thomson-orogen-re.pdf",
+      "status": "completed",
+      "elapsed_seconds": 0.088,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    },
+    {
+      "stage": "catalog_upload",
+      "deployment": null,
+      "document": "111564_murray-basin-cenozoic-thickness.pdf",
+      "status": "completed",
+      "elapsed_seconds": 0.078,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    }
+  ],
+  "rates_usd_per_million": {},
+  "estimated_token_cost_usd": null,
+  "unpriced_events": 4,
+  "limitations": [
+    "Token totals sum reported counters only; null means unavailable, not zero.",
+    "CU internal tokens and IQ/Search query-vectorization tokens are not exposed.",
+    "MAF usage includes tool-loop calls; aborted runs may omit earlier calls.",
+    "SDK retries, timeouts and missing usage can leave billed work unreported.",
+    "Cost is a partial token-only USD estimate from operator rates, not an Azure bill.",
+    "CU page meters, Search capacity/semantic, Blob, networking and taxes excluded.",
+    "Cached/reasoning tokens are subsets of input/output, not additional tokens.",
+    "Without a cached_input rate, all reported input tokens use the input rate."
+  ]
+}

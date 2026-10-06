@@ -75,9 +75,13 @@ async def test_character_budget_no_silent_truncation(settings, backend, document
     state.context_chars = settings.max_context_chars - len(document.pages[0].text)
     await state.open_pages(document.document_id, 1, 1)
     assert state.context_chars == settings.max_context_chars
-    with pytest.raises(BudgetExceeded, match="character"):
+    with pytest.raises(BudgetExceeded, match="character") as error:
         await state.open_pages(document.document_id, 2, 2)
     assert len(state.evidence) == 1
+    assert f"used={settings.max_context_chars}" in str(error.value)
+    assert f"requested={len(document.pages[1].text)}" in str(error.value)
+    assert "remaining=0" in str(error.value)
+    assert f"limit={settings.max_context_chars}" in str(error.value)
 
 
 async def test_call_budget_exact(settings, backend, document):

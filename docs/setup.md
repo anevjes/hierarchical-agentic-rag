@@ -157,6 +157,13 @@ rejected before Azure calls.
 
 ## Usage and cost reporting
 
+CLI JSON on stdout is ASCII-safe: non-ASCII characters are represented by JSON
+Unicode escapes. This avoids `UnicodeEncodeError` when Windows redirects Python
+stdout through a legacy encoding such as `cp1252`. `ConvertFrom-Json` decodes the
+escapes back to the original answer, quotes and document names. No source text is
+replaced or dropped. This applies to `ask`, `ingest` and `catalog` stdout;
+`--usage-report` files continue to be written explicitly as UTF-8.
+
 ```powershell
 hrag ingest --blob "policies/claims.pdf" --usage-report .\claims-usage.json
 hrag ingest --prefix "policies/" --top 20 --usage-report .\batch-usage.json
@@ -318,10 +325,22 @@ retry `catalog` without paying for CU again.
    physical pages lazily, can expand adjacent pages or search non-adjacent pages,
    and do not load the full Markdown merely to locate keywords.
 4. Each worker returns bounded evidence notes with exact quotes from opened
-   pages. A note may cover multiple facets. An unsupported quote or unknown
-   evidence ID fails the query.
+   pages. A note may cover multiple facets. Invalid note counts, quote lengths,
+   exact matches, page IDs or facet IDs trigger at most one tool-free evidence
+   repair per document, using only that worker's already-opened pages.
+   Corrected notes must pass the same strict validation. Unsupported claims may
+   be removed only with explicit gaps, which still go through the coverage gate.
+   A failed repair or a later invalid brief fails the query; no endless retries
+   or silent quote normalization/truncation. Malformed output schemas and
+   service/provenance errors are not covered by this repair.
 5. The coverage assessor reviews notes and gaps across documents. Code checks
-   per-facet and overall distinct-document requirements. Missing coverage returns
+   per-facet and overall distinct-document requirements. An explicit
+   `allowed_evidence_ids_by_facet` map restricts each facet to its verified notes.
+   Wrong/duplicate/missing facets or misassigned evidence IDs receive one tool-free
+   correction attempt against the same evidence packet. The corrected assessment
+   must pass the same validation; a second invalid response fails explicitly.
+   This does not relabel evidence automatically, fabricate supporting quotes, or
+   retry a valid assessment merely because it reports gaps. Missing coverage returns
    `insufficient_context`, or `budget_exhausted` when relevant worker limits were
    reached; no answer is synthesized. Workers can loop on gaps locally, but the
    coordinator does not automatically restart discovery after this final gate.
@@ -360,6 +379,82 @@ the coordinator add usage. This is not a hard token or dollar spending cap.
 The native MAF invocation limits remain in effect per run as well. Reduce
 concurrency for quota pressure; increasing it can lower latency but does not
 reduce the number of model calls or guarantee lower cost.
+
+Evidence repairs are recorded as `document_worker_repair` usage events, with
+`evidence_repairs_attempted` and `evidence_repairs_completed` counters. Per-document
+results retain `evidence_repairs` and `note_validation_errors`. Valid notes incur
+no repair call. A repair may resend the worker's opened pages to the model, so it
+adds measured tokens, but can happen only once per document and remains inside
+the global query deadline.
+
+#### Troubleshooting character budgets and invalid quotes
+
+Coverage-assessor corrections are recorded as `broad_assessor_repair` usage events
+and `coverage_repairs_attempted`/`coverage_repairs_completed` counters. The result
+retains `broad.coverage_repairs` and `broad.coverage_validation_errors`. The retry
+adds one model call at most and remains inside the existing global deadline.
+`Coverage assessment ... evidence not verified for its facet` means an invalid
+facet-to-evidence association, not necessarily an invalid source quote. Increasing
+the character budget does not resolve that association error.
+
+`Evidence character budget reached` is a deliberate stop, not an Azure service
+error. Logs include used, requested, remaining and allowed characters; each broad
+worker also logs its reserved budgets. With the default 150,000-character broad
+budget and four selected documents, each worker receives 37,500 characters.
+Retrieved chunks and newly opened full pages both consume that allowance. CU
+chart JSON and rich visual descriptions can make a physical page unusually large.
+Tools return the remaining character allowance so workers can choose smaller
+page ranges. They never silently truncate an oversized page.
+
+If more source context is needed, explicitly increase the **broad** allowance
+for the next PowerShell invocation, for example:
+
+```powershell
+$env:HRAG_BROAD_MAX_CONTEXT_CHARS = "400000"
+hrag ask --broad "Your cross-document question" --usage-report .\broad-retry-usage.json
+```
+
+With four selected documents this permits 100,000 characters per worker; with
+six, approximately 66,666. It can increase latency and token cost and is not a
+guarantee of sufficient evidence. `HRAG_MAX_CONTEXT_CHARS` controls focused mode;
+changing it alone does not raise the broad worker allocation.
+
+For substantially larger investigations, this optional `.env` profile raises both
+the broad budgets and the focused/native MAF limits. It is not the accelerator's
+default and may materially increase token usage and latency:
+
+```dotenv
+HRAG_MAX_TOOL_CALLS=80
+HRAG_MAX_SEARCHES=12
+HRAG_MAX_PAGES=100
+HRAG_MAX_CONTEXT_CHARS=500000
+HRAG_QUERY_TIMEOUT_SECONDS=900
+HRAG_BROAD_MAX_TOOL_CALLS=120
+HRAG_BROAD_MAX_SEARCHES=48
+HRAG_BROAD_MAX_PAGES=120
+HRAG_BROAD_MAX_CONTEXT_CHARS=1200000
+HRAG_BROAD_TIMEOUT_SECONDS=900
+```
+
+The broad character allowance is 300,000 per worker with four selected documents,
+or 200,000 with six. Concurrency, document-selection limits and citation/coverage
+requirements are unchanged. The CLI currently also uses `HRAG_MAX_TOOL_CALLS`
+and `HRAG_QUERY_TIMEOUT_SECONDS` for native MAF per-run limits, including broad
+workers; increase these alongside the broad allocations as shown. These are
+application limits, not an increase to model context windows or Azure quotas.
+More budget cannot supply evidence absent from the indexed reports.
+
+Settings are read on each command invocation; no re-ingestion is necessary.
+PowerShell environment variables override `.env`: remove any earlier
+`$env:HRAG_BROAD_MAX_CONTEXT_CHARS` override, or update it to the intended value.
+
+Inspect the final traceback or result, not just the first ERROR log. An evidence
+budget stop is normally returned as a budget outcome, whereas a fatal
+`Worker evidence requires bounded exact quotes` error identifies a separate
+model-output validation failure. Diagnostics identify unopened IDs, mismatched
+substrings and over-limit lengths without logging source quote text. Raising a
+character budget does not fix an invalid citation. Usage already collected is
+retained on either path, subject to the documented aborted-run limitations.
 
 Service errors cancel sibling workers and propagate. They are never converted
 into missing evidence. A global deadline cancels workers and returns an explicit

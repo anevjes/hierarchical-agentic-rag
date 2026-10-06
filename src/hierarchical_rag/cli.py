@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import json
 import logging
 from contextlib import AsyncExitStack, ExitStack
 from pathlib import Path
@@ -65,9 +66,9 @@ async def run(args: argparse.Namespace) -> None:
                         raise
         if result is not None:
             result.usage = report
-            print(result.model_dump_json(indent=2))
+            print(json.dumps(result.model_dump(mode="json"), indent=2, ensure_ascii=True))
         elif args.command in ("ingest", "catalog"):
-            print(report.model_dump_json(indent=2))
+            print(json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=True))
 
 
 async def _run(

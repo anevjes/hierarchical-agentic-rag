@@ -185,6 +185,8 @@ class DocumentCoverage(DocumentIdentity):
     notes: list[EvidenceNote] = Field(default_factory=list)
     gaps: list[str] = Field(default_factory=list)
     opened_pages: list[int] = Field(default_factory=list)
+    evidence_repairs: int = 0
+    note_validation_errors: list[str] = Field(default_factory=list)
 
 
 class BroadReport(Record):
@@ -193,6 +195,8 @@ class BroadReport(Record):
     coverage: list[FacetCoverage] = Field(default_factory=list)
     discovery_queries_completed: int = 0
     documents_cited: int = 0
+    coverage_repairs: int = 0
+    coverage_validation_errors: list[str] = Field(default_factory=list)
     scope: str = (
         "Comparison of selected retrieved documents, not an exhaustive corpus review. "
         "Catalog overviews and model-written notes are navigation/interpretation, not source truth."

@@ -1,0 +1,56 @@
+{
+  "run_id": "fb43b92e0af64a909b48118e2d5059da",
+  "command": "ask",
+  "status": "failed",
+  "started_at": "2026-10-06T07:09:27.633388Z",
+  "finished_at": "2026-10-06T07:09:32.646414Z",
+  "elapsed_seconds": 5.013,
+  "counters": {
+    "broad_searches": 0,
+    "tool_calls": 0,
+    "pages_opened": 0,
+    "pages_cached": 0,
+    "evidence_characters": 0,
+    "documents_investigated": 0,
+    "documents_cited": 0,
+    "facets_covered": 0,
+    "verified_evidence_records": 0,
+    "verified_quote_characters": 0,
+    "pages_opened_not_cited": 0
+  },
+  "reported_tokens": {
+    "input_tokens": null,
+    "output_tokens": null,
+    "total_tokens": null,
+    "cached_input_tokens": null,
+    "reasoning_output_tokens": null
+  },
+  "events": [
+    {
+      "stage": "broad_planner",
+      "deployment": "gpt-5.6-sol",
+      "document": null,
+      "status": "failed",
+      "elapsed_seconds": 1.988,
+      "input_tokens": null,
+      "output_tokens": null,
+      "total_tokens": null,
+      "cached_input_tokens": null,
+      "reasoning_output_tokens": null,
+      "estimated_token_cost_usd": null
+    }
+  ],
+  "rates_usd_per_million": {},
+  "estimated_token_cost_usd": null,
+  "unpriced_events": 1,
+  "limitations": [
+    "Token totals sum reported counters only; null means unavailable, not zero.",
+    "CU internal tokens and IQ/Search query-vectorization tokens are not exposed.",
+    "MAF usage includes tool-loop calls; aborted runs may omit earlier calls.",
+    "SDK retries, timeouts and missing usage can leave billed work unreported.",
+    "Cost is a partial token-only USD estimate from operator rates, not an Azure bill.",
+    "CU page meters, Search capacity/semantic, Blob, networking and taxes excluded.",
+    "Cached/reasoning tokens are subsets of input/output, not additional tokens.",
+    "Without a cached_input rate, all reported input tokens use the input rate."
+  ]
+}

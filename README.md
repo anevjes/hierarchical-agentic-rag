@@ -188,6 +188,10 @@ Use dedicated names: `provision` updates objects with those names.
 
 Query output is structured JSON with status, sufficiency rationale/gaps, answer,
 citations, retrieved chunks, full opened evidence, document links, and usage counters.
+CLI stdout uses ASCII-safe JSON escapes for Unicode (for example, `\u2264` for
+the less-than-or-equal symbol), so Windows code-page pipes do not fail.
+PowerShell `ConvertFrom-Json` restores the original characters without data loss.
+Separate `--usage-report` files remain UTF-8.
 `insufficient_context` and `budget_exhausted` never contain a synthesized answer.
 Service, authentication, malformed-reference, and citation-validation errors fail
 explicitly with a nonzero exit code.
@@ -248,8 +252,14 @@ filtered to its document/revision and deduplicated by page; it opens only releva
 evidence pages, not every discovery candidate.
 
 Workers return compact claims, methods, limitations and exact opened-page quotes.
+A worker with invalid notes gets at most one tool-free repair attempt using its
+already-opened pages. The repaired quotes are checked again without normalizing
+or truncating source text; unresolved invalid evidence still fails explicitly.
+Repairs, their token usage and validation diagnostics are reported.
 A separate coverage assessment checks each planned facet and required independent
-document counts before the writer compares sources. Final quotes are revalidated
+document counts before the writer compares sources. It receives explicit allowed
+evidence IDs per facet; invalid references get one bounded correction attempt,
+without relaxing coverage requirements or inventing evidence. Final quotes are revalidated
 against the full stored pages and the approved evidence packet. Service/provenance
 failures remain errors, not silently omitted reports.
 

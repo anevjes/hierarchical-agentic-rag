@@ -48,7 +48,12 @@ class Investigation:
 
     def _charge_text(self, text: str) -> None:
         if self.context_chars + len(text) > self.settings.max_context_chars:
-            self._exhaust("Evidence character budget reached; no text was truncated")
+            self._exhaust(
+                f"Evidence character budget reached: used={self.context_chars}, "
+                f"requested={len(text)}, "
+                f"remaining={self.settings.max_context_chars - self.context_chars}, "
+                f"limit={self.settings.max_context_chars}; no text was truncated"
+            )
         self.context_chars += len(text)
 
     async def search_knowledge_base(self, query: str) -> str:
@@ -85,6 +90,7 @@ class Investigation:
                 "returned_references": len(hits),
                 "selected_references": len(selected),
                 "selection_limit": self.settings.max_hits,
+                "remaining_context_chars": self.settings.max_context_chars - self.context_chars,
             }
         )
 
@@ -171,6 +177,8 @@ class Investigation:
                     if number not in fresh_numbers
                 ],
                 "document_page_count": len(doc.pages),
+                "remaining_context_chars": self.settings.max_context_chars - self.context_chars,
+                "remaining_pages": self.settings.max_pages - len(self.evidence),
             }
         )
 
