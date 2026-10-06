@@ -301,6 +301,12 @@ the raw-result hash is available for separate audit verification.
 - `mermaid`: CU's Mermaid representation for diagrams, otherwise null.
 - `figure_id`, `kind`, `page_number`, `source_url` (including `#page=N`),
   `source_region`, and `markdown_span` locate each figure in the source.
+- CU may omit `kind` or return null. Such figures are exported with `kind: null`,
+  their description and provenance intact, plus a log/per-figure warning.
+  Classification is not guessed; any unclassified structured content remains
+  in `analysis.json`, not mislabelled as Chart.js or Mermaid. Consumers must
+  accept a nullable `kind`. Explicitly classified charts/diagrams still undergo
+  their existing content validation.
 - Top-level document identity, revision, ETag, analyzer/API version and
   `generated: true` identify provenance. `markdown_span` uses Unicode code-point
   offsets into full `document.md`, not offsets into the individual page file.

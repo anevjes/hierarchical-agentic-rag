@@ -46,6 +46,11 @@ def figure_artifact(
             description=figure.description,
         )
         structured = figure.as_dict().get("content")
+        if figure.kind is None:
+            record.warnings.append(
+                "Content Understanding did not return a figure kind; preserved as unclassified. "
+                "Any unclassified structured content remains in analysis.json."
+            )
         if figure.kind == "chart":
             if not isinstance(structured, dict) or not structured:
                 raise ValueError("CU chart figure has no structured chart content")

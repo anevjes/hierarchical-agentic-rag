@@ -1,0 +1,82 @@
+<?xml version='1.0' encoding='utf-8'?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="990" viewBox="0 0 1440 990" role="img" aria-labelledby="diagram-title diagram-description">
+  <title id="diagram-title">Page-aware Foundry IQ and Microsoft Agent Framework architecture</title>
+  <desc id="diagram-description">Exported from architecture.excalidraw. Blob PDFs flow through Content Understanding to cached page Markdown and a hybrid Search index. A Foundry IQ knowledge base supports an investigator that opens pages before a separate writer answers.</desc>
+  <rect x="0" y="0" width="1440" height="990" fill="#ffffff" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="28" text-anchor="start" opacity="1.0">
+    <tspan x="40" y="48.0">Page-aware Foundry IQ + Microsoft Agent Framework</tspan>
+  </text>
+  <rect stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" x="20" y="110" width="1400" height="300" rx="12" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="18" text-anchor="start" opacity="1.0">
+    <tspan x="40" y="143.0">INGESTION - explicit CLI, Azure SDKs, DefaultAzureCredential</tspan>
+  </text>
+  <rect stroke="#0078D4" stroke-width="2" fill="#CFE4FA" opacity="1.0" x="50" y="210" width="230" height="150" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="18" text-anchor="middle" opacity="1.0">
+    <tspan x="165.0" y="258.0">Private Blob</tspan>
+    <tspan x="165.0" y="291.3333333333333">Original PDFs</tspan>
+    <tspan x="165.0" y="324.6666666666667">ETag checked</tspan>
+  </text>
+  <rect stroke="#F7630C" stroke-width="2" fill="#FFF4CE" opacity="1.0" x="350" y="210" width="240" height="150" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="17" text-anchor="middle" opacity="1.0">
+    <tspan x="470.0" y="247.0">Content Understanding</tspan>
+    <tspan x="470.0" y="287.0">OCR + visual analysis</tspan>
+    <tspan x="470.0" y="327.0">Physical page spans</tspan>
+  </text>
+  <rect stroke="#0078D4" stroke-width="2" fill="#CFE4FA" opacity="1.0" x="660" y="210" width="300" height="150" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="17" text-anchor="middle" opacity="1.0">
+    <tspan x="810.0" y="247.0">Private derived Blob</tspan>
+    <tspan x="810.0" y="287.0">Manifest + document.md</tspan>
+    <tspan x="810.0" y="327.0">pages/0001.md, 0002.md ...</tspan>
+  </text>
+  <rect stroke="#5C2D91" stroke-width="2" fill="#E8DAEF" opacity="1.0" x="1050" y="210" width="330" height="150" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="17" text-anchor="middle" opacity="1.0">
+    <tspan x="1215.0" y="247.0">Azure AI Search index</tspan>
+    <tspan x="1215.0" y="287.0">Chunk text + embeddings</tspan>
+    <tspan x="1215.0" y="327.0">Hybrid + semantic ranking</tspan>
+  </text>
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="280,285 350,285" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="339.1946347717679,290.21958640933474 350,285 339.1946347717679,279.78041359066526" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="590,285 660,285" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="649.1946347717678,290.21958640933474 660,285 649.1946347717678,279.78041359066526" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="960,285 1050,285" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="1039.1946347717678,290.21958640933474 1050,285 1039.1946347717678,279.78041359066526" />
+  <rect stroke="#107C10" stroke-width="2" fill="none" opacity="1.0" x="20" y="450" width="1400" height="520" rx="12" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="18" text-anchor="start" opacity="1.0">
+    <tspan x="40" y="483.0">QUERY - isolated per-question state; bounded MAF tool-invocation loop</tspan>
+  </text>
+  <rect stroke="#5C2D91" stroke-width="2" fill="#E8DAEF" opacity="1.0" x="1050" y="550" width="330" height="180" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="17" text-anchor="middle" opacity="1.0">
+    <tspan x="1215.0" y="587.0">Foundry IQ knowledge base</tspan>
+    <tspan x="1215.0" y="624.5">Search-index knowledge source</tspan>
+    <tspan x="1215.0" y="662.0">Extractive semantic intent</tspan>
+    <tspan x="1215.0" y="699.5">No KB answer synthesis</tspan>
+  </text>
+  <rect stroke="#107C10" stroke-width="2" fill="#DFF6DD" opacity="1.0" x="470" y="550" width="440" height="180" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="18" text-anchor="middle" opacity="1.0">
+    <tspan x="690.0" y="583.0">MAF Document Investigator</tspan>
+    <tspan x="690.0" y="623.0">search_knowledge_base</tspan>
+    <tspan x="690.0" y="663.0">open_pages / search_document</tspan>
+    <tspan x="690.0" y="703.0">Assess coverage; do not answer</tspan>
+  </text>
+  <rect stroke="#0078D4" stroke-width="2" fill="#CFE4FA" opacity="1.0" x="50" y="590" width="280" height="100" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="19" text-anchor="middle" opacity="1.0">
+    <tspan x="190.0" y="639.0">Original user question</tspan>
+  </text>
+  <rect stroke="#107C10" stroke-width="2" fill="#DFF6DD" opacity="1.0" x="470" y="810" width="440" height="120" rx="0" />
+  <text fill="#000000" font-family="Helvetica, Arial, sans-serif" font-size="18" text-anchor="middle" opacity="1.0">
+    <tspan x="690.0" y="848.0">Sufficiency gate -&gt; tool-free writer</tspan>
+    <tspan x="690.0" y="893.0">Validated quotes + private #page links</tspan>
+  </text>
+  <polyline stroke="#5C2D91" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="1215,360 1215,550" />
+  <polyline stroke="#5C2D91" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="1209.7804135906651,539.1946347717678 1215,550 1220.2195864093349,539.1946347717678" />
+  <polyline stroke="#5C2D91" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="1050,640 910,640" />
+  <polyline stroke="#5C2D91" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="920.8053652282322,634.7804135906653 910,640 920.8053652282322,645.2195864093347" />
+  <polyline stroke="#5C2D91" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="1039.1946347717678,645.2195864093347 1050,640 1039.1946347717678,634.7804135906653" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="330,640 470,640" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="459.1946347717679,645.2195864093347 470,640 459.1946347717679,634.7804135906653" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="790,550 790,360" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="795.2195864093347,370.8053652282321 790,360 784.7804135906653,370.8053652282321" />
+  <polyline stroke="#0078D4" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="784.7804135906653,539.1946347717678 790,550 795.2195864093347,539.1946347717678" />
+  <polyline stroke="#107C10" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" stroke-linejoin="round" points="690,730 690,810" />
+  <polyline stroke="#107C10" stroke-width="2" fill="none" opacity="1.0" stroke-linecap="round" points="684.7804135906653,799.1946347717678 690,810 695.2195864093347,799.1946347717678" />
+</svg>

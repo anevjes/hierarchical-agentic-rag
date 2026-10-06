@@ -48,7 +48,7 @@ class ArtifactReference(Record):
 
 class FigureRecord(Record):
     figure_id: str = Field(min_length=1)
-    kind: str = Field(min_length=1)
+    kind: str | None = Field(min_length=1)
     page_number: int = Field(ge=1)
     source_url: str
     source_region: str | None = None

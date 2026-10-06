@@ -111,6 +111,10 @@ Supported graphs have a `chart` object containing CU's original Chart.js JSON
 Other images retain CU's textual description with `chart: null`.
 The artifact includes source identity/ETag, analyzer/API version and
 `generated: true`. Missing descriptions are explicitly flagged in `warnings`.
+CU can also omit a figure's classification: these entries retain `kind: null`,
+their description and page provenance, with an explicit warning rather than
+failing ingestion or guessing that they are charts. Unclassified structured
+content remains available in the raw `analysis.json`.
 
 This exports the existing CU result, without another LLM call, invented data or
 image-asset downloads. Page Markdown still carries CU descriptions/chart blocks
@@ -194,6 +198,11 @@ See [setup and operations](docs/setup.md) for resources, RBAC, model capabilitie
 private links, live verification, costs, and ingestion lifecycle.
 
 ## Architecture and behavior
+
+[![Architecture: Blob PDF ingestion, Content Understanding, hybrid Search, and the page-expanding MAF investigation loop](docs/architecture.svg)](docs/architecture.svg)
+
+The image is a static export of [architecture.excalidraw](docs/architecture.excalidraw).
+Regenerate the SVG after editing the diagram to keep this preview in sync.
 
 - [Design and limitations](docs/architecture.md)
 - [Editable architecture diagram](docs/architecture.excalidraw)
